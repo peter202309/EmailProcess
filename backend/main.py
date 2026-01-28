@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from imap_tools import MailBox, AND
 from bs4 import BeautifulSoup
 import re
+from datetime import datetime
 
 from rag import RAGService
 import database
@@ -104,6 +105,8 @@ class ProcessingRequest(BaseModel):
     updateOnly: Optional[bool] = False
     instruction: Optional[str] = None # For manual overrides like tone or custom prompts
     attachmentPath: Optional[str] = None # If we only want to analyze a specific file
+    sourcesUsed: Optional[List[str]] = []
+    ragSources: Optional[List[str]] = []
 
 
 
@@ -192,6 +195,158 @@ def rebuild_kb():
         global rag_service
         rag_service = RAGService()
         return result
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# --- Dry Run Mode & Approval Routes ---
+@app.get("/pending-drafts")
+def get_pending_drafts_route():
+    """Get all emails pending approval in dry run mode."""
+    try:
+        drafts = database.get_pending_drafts()
+        return {"status": "success", "drafts": drafts, "count": len(drafts)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/approve-draft")
+def approve_draft_route(emailId: str, accountOwner: str):
+    """Approve a single draft for sending."""
+    try:
+        database.approve_draft(emailId, accountOwner)
+        database.log_event("DRAFT_APPROVED", emailId, f"Draft approved by user for {accountOwner}")
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/reject-draft")
+def reject_draft_route(emailId: str, accountOwner: str):
+    """Reject a single draft."""
+    try:
+        database.reject_draft(emailId, accountOwner)
+        database.log_event("DRAFT_REJECTED", emailId, f"Draft rejected by user for {accountOwner}")
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+class BatchApprovalRequest(BaseModel):
+    emails: list  # List of {"id": str, "accountOwner": str}
+
+@app.post("/batch-approve")
+def batch_approve_route(request: BatchApprovalRequest):
+    """Batch approve multiple drafts."""
+    try:
+        email_tuples = [(e["id"], e["accountOwner"]) for e in request.emails]
+        database.batch_approve_drafts(email_tuples)
+        database.log_event("BATCH_APPROVAL", "system", f"Batch approved {len(email_tuples)} drafts")
+        return {"status": "success", "count": len(email_tuples)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/mark-dry-run")
+def mark_dry_run_route(emailId: str, accountOwner: str):
+    """Mark an email as dry run mode."""
+    try:
+        database.mark_email_as_dry_run(emailId, accountOwner)
+        database.log_event("DRY_RUN_MARKED", emailId, f"Email marked as dry run for {accountOwner}")
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/reset-email")
+def reset_email_route(emailId: str, accountOwner: str):
+    """Reset an email for re-evaluation."""
+    try:
+        database.reset_email(emailId, accountOwner)
+        database.log_event("EMAIL_RESET", emailId, f"Email reset for re-evaluation ({accountOwner})")
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/emails/{email_id}/resolve")
+def resolve_email(email_id: str):
+    """Mark an email as processed (resolved) without sending a reply."""
+    try:
+        database.update_email_status(email_id, "processed")
+        database.log_event("RESOLVED_NO_REPLY", email_id, "Marked as resolved without reply")
+        return {"status": "success", "message": f"Email {email_id} marked as resolved"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+@app.post("/batch-reject")
+def batch_reject_route(request: BatchApprovalRequest):
+    """Batch reject multiple drafts."""
+    try:
+        email_tuples = [(e["id"], e["accountOwner"]) for e in request.emails]
+        database.batch_reject_drafts(email_tuples)
+        database.log_event("BATCH_REJECTION", "system", f"Batch rejected {len(email_tuples)} drafts")
+        return {"status": "success", "count": len(email_tuples)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/send-approved-drafts")
+async def send_approved_drafts():
+    """Send all approved drafts and mark them as sent."""
+    try:
+        # Get all approved drafts
+        conn = sqlite3.connect(database.DB_NAME, timeout=30)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("""
+            SELECT * FROM emails 
+            WHERE dry_run_mode = 1 AND approval_status = 'approved'
+        """)
+        approved_drafts = c.fetchall()
+        conn.close()
+        
+        sent_count = 0
+        errors = []
+        
+        for draft in approved_drafts:
+            try:
+                # Get the draft content from ai_analysis if sent_reply is missing
+                reply_body = draft['sent_reply']
+                if not reply_body and draft['ai_analysis']:
+                    analysis = json.loads(draft['ai_analysis'])
+                    reply_body = analysis.get('draftReply', "")
+                
+                if not reply_body:
+                    errors.append(f"No draft found for {draft['from_addr']}")
+                    continue
+
+                # Send the email
+                success = send_email(
+                    draft['account_owner'],
+                    draft['from_addr'],
+                    draft['subject'],
+                    reply_body,
+                    original_message_id=draft.get('message_id')
+                )
+                
+                if success:
+                    # Mark as sent and remove dry run mode
+                    conn = sqlite3.connect(database.DB_NAME, timeout=30)
+                    c = conn.cursor()
+                    c.execute("""
+                        UPDATE emails 
+                        SET dry_run_mode = 0, sent_at = ?, approval_status = 'sent'
+                        WHERE id = ? AND account_owner = ?
+                    """, (datetime.now().isoformat(), draft['id'], draft['account_owner']))
+                    conn.commit()
+                    conn.close()
+                    
+                    sent_count += 1
+                    database.log_event("DRAFT_SENT", draft['id'], f"Approved draft sent to {draft['from_addr']}")
+                else:
+                    errors.append(f"Failed to send to {draft['from_addr']}")
+            except Exception as e:
+                errors.append(f"Error sending to {draft['from_addr']}: {str(e)}")
+        
+        return {
+            "status": "success",
+            "sent": sent_count,
+            "total": len(approved_drafts),
+            "errors": errors
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -335,15 +490,104 @@ def mark_email_as_read(email_id: str):
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-@app.post("/emails/{email_id}/resolve")
-def resolve_email(email_id: str):
-    """Mark an email as processed (resolved) without sending a reply."""
+@app.post("/auto-trigger-processing")
+async def auto_trigger_processing():
+    """
+    Automatically processes all 'unread' emails in the database.
+    Used by the IMAP worker to trigger analysis without user intervention.
+    """
     try:
-        database.update_email_status(email_id, "processed")
-        database.log_event("RESOLVED_NO_REPLY", email_id, "Marked as resolved without reply")
-        return {"status": "success", "message": f"Email {email_id} marked as resolved"}
+        # Get unread emails
+        all_emails = database.get_all_emails()
+        unread_emails = [e for e in all_emails if e['status'] == 'unread']
+        
+        if not unread_emails:
+            return {"status": "success", "processed": 0}
+            
+        auto_reply_mode = database.get_bool_setting("autoReplyMode", False)
+        dry_run_mode = database.get_bool_setting("dryRunMode", False)
+        threshold = float(database.get_settings().get("autoReplyThreshold", 0.85))
+        
+        processed_count = 0
+        for email in unread_emails:
+            # Re-use the analysis logic by calling the local analyze_email logic
+            # Since analyze_email is an async function, we can call it directly
+            req = ProcessingRequest(
+                emailId=email['id'],
+                emailSubject=email['subject'],
+                emailBody=email['body'],
+                provider='gemini' # Default for auto
+            )
+            
+            analysis_result = await analyze_email(req)
+            
+            # Now apply auto-reply/dry-run logic
+            confidence = analysis_result.get('confidence', 0.0)
+            requires_reply = analysis_result.get('requiresReply', True)
+            is_auto_match = analysis_result.get('matchedTemplate') is not None
+            
+            if auto_reply_mode or dry_run_mode:
+                if requires_reply is False and confidence >= threshold:
+                    # Auto-resolve
+                    database.update_email_status(email['id'], "processed")
+                    database.log_event("AUTO_RESOLVE", email['id'], "Newsletters/Auto-msg resolved automatically")
+                elif (requires_reply is not False) and (is_auto_match or confidence >= threshold or dry_run_mode):
+                    # Determine draft content (Prioritize Template)
+                    template = analysis_result.get('matchedTemplate')
+                    final_draft = template.get('content') if is_auto_match else analysis_result.get('analysis', '')
+                    attachments = template.get('attachments', []) if is_auto_match else []
+                    
+                    if dry_run_mode:
+                        # Mark as dry run
+                        # Save the specific draft we chose (template or AI) to the DB
+                        analysis_payload = {
+                            "draftReply": final_draft,
+                            "confidence": 1.0 if is_auto_match else confidence,
+                            "isUrgent": analysis_result.get('isUrgent', False),
+                            "category": analysis_result.get('category', 'Information'),
+                            "intent": "Auto-Template Match" if is_auto_match else analysis_result.get('intent', ''),
+                            "sourcesUsed": analysis_result.get('sourcesUsed', []),
+                            "ragSources": analysis_result.get('ragSources', [])
+                        }
+                        # Set status to PROCESSED so it shows up in pending drafts
+                        database.update_email_status(email['id'], "processed", analysis=analysis_payload)
+                        database.mark_email_as_dry_run(email['id'], email['accountOwner'])
+                        database.log_event("AUTO_DRY_RUN", email['id'], f"Draft generated ({'Template' if is_auto_match else 'AI'}), pending review")
+                    elif auto_reply_mode:
+                        # REAL SEND
+                        # Convert template attachments to the format send_email expects
+                        # (Template attachments come with 'content' as data URI or base64)
+                        processed_attachments = []
+                        for att in attachments:
+                            content = att.get('content', '')
+                            if ',' in content: # Data URI
+                                content = content.split(',')[1]
+                            processed_attachments.append({
+                                "filename": att.get('name'),
+                                "content": content
+                            })
+
+                        # Send reply
+                        success = send_email(
+                            email['accountOwner'],
+                            email['from'],
+                            email['subject'],
+                            final_draft,
+                            attachments=processed_attachments,
+                            original_message_id=email.get('message_id')
+                        )
+                        if success:
+                            database.update_email_status(email['id'], "processed", sent_reply=final_draft)
+                            database.log_event("AUTO_REPLY_SENT", email['id'], f"Auto-replied to {email['from']} using {'Template' if is_auto_match else 'AI'}")
+                        else:
+                            database.log_event("AUTO_REPLY_FAILED", email['id'], f"SMTP failed for auto-reply")
+            
+            processed_count += 1
+            
+        return {"status": "success", "processed": processed_count}
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        print(f"Auto-processing error: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.post("/analyze-email")
 async def analyze_email(request: ProcessingRequest):
@@ -358,7 +602,9 @@ async def analyze_email(request: ProcessingRequest):
             "confidence": 1.0,
             "isUrgent": request.isUrgent,
             "category": request.category,
-            "intent": request.intent
+            "intent": request.intent,
+            "sourcesUsed": request.sourcesUsed,
+            "ragSources": request.ragSources
         }
         database.update_email_status(request.emailId, "pending_review", analysis=analysis_payload)
         return {"status": "updated", "category": request.category}
@@ -430,6 +676,8 @@ async def analyze_email(request: ProcessingRequest):
         "analysis": analysis_payload.get("draftReply", ""),
         "confidence": analysis_payload.get("confidence", 0.0),
         "isUrgent": analysis_payload.get("isUrgent", False),
+        "requiresReply": analysis_payload.get("requiresReply", True),
+        "suggestedAction": analysis_payload.get("suggestedAction", "manual_review"),
         "category": analysis_payload.get("category", "Information"),
         "intent": analysis_payload.get("intent", ""),
         "sourcesUsed": analysis_payload.get("sourcesUsed", []),
@@ -579,6 +827,7 @@ def _call_openai_compatible(prompt: str, base_url: str, api_key: str, model: str
             "requiresReply": bool(res_data.get("requiresReply", True)),
             "category": res_data.get("category", "Information"),
             "intent": res_data.get("intent", ""),
+            "sourcesUsed": res_data.get("sourcesUsed", []),
         }
     except:
         raise Exception(f"Failed to parse JSON from {model}")
@@ -611,6 +860,7 @@ def _call_groq_sync(prompt: str):
         "requiresReply": bool(res_data.get("requiresReply", True)),
         "category": res_data.get("category", "Information"),
         "intent": res_data.get("intent", ""),
+        "sourcesUsed": res_data.get("sourcesUsed", []),
     }
 
 def _call_gemini_sync(prompt: str):
@@ -628,8 +878,11 @@ def _call_gemini_sync(prompt: str):
         "draftReply": res_data.get("draftReply", ""),
         "confidence": float(res_data.get("confidence", 0.0)),
         "isUrgent": bool(res_data.get("isUrgent", False)),
+        "requiresReply": bool(res_data.get("requiresReply", True)),
+        "suggestedAction": res_data.get("suggestedAction", "manual_review"),
         "category": res_data.get("category", "Information"),
         "intent": res_data.get("intent", ""),
+        "sourcesUsed": res_data.get("sourcesUsed", []),
     }
 
 # --- Tasks Routes ---
@@ -652,49 +905,40 @@ def delete_task(task_id: int):
     database.delete_task(task_id)
     return {"status": "success"}
 
-@app.post("/send-reply")
-def send_reply(request: SendReplyRequest):
+def send_email(account_owner: str, recipient: str, subject: str, body: str, attachments: list = None, original_message_id: str = None):
     """
-    Sends an email via SMTP and updates the database status.
-    Automatically uses the SMTP credentials of the account that received the email.
+    Core SMTP sending function. Returns True if success, False otherwise.
     """
     try:
-        # 1. Find the email and its owner
-        all_emails = database.get_all_emails()
-        original = next((e for e in all_emails if e['id'] == request.emailId), None)
-        
-        if not original:
-            raise HTTPException(status_code=404, detail="Original email not found in database.")
-            
-        owner = original.get('accountOwner')
+        # Find the account credentials
         accounts = get_all_accounts()
-        target_acc = next((a for a in accounts if a['user'] == owner), None)
+        target_acc = next((a for a in accounts if a['user'] == account_owner), None)
         
-        # Fallback to current default if owner not found in accounts list (e.g. env changed)
         if not target_acc and accounts:
             target_acc = accounts[0]
             
         if not target_acc:
-             raise HTTPException(status_code=500, detail="No valid email account found for sending.")
+            print(f"Error: No account found for {account_owner}")
+            return False
 
-        # 2. Create Message
+        # Create Message
         msg = MIMEMultipart()
         msg['From'] = target_acc['user']
-        msg['To'] = request.recipient
-        msg['Subject'] = f"Re: {request.subject}" if not request.subject.startswith("Re:") else request.subject
+        msg['To'] = recipient
+        msg['Subject'] = f"Re: {subject}" if not subject.startswith("Re:") else subject
         
         # Threading Headers
-        if original.get('message_id'):
-            msg['In-Reply-To'] = original['message_id']
-            msg['References'] = original['message_id']
+        if original_message_id:
+            msg['In-Reply-To'] = original_message_id
+            msg['References'] = original_message_id
         
-        msg.attach(MIMEText(request.replyBody, 'plain'))
+        msg.attach(MIMEText(body, 'plain'))
         
-        # Attachments
-        if request.attachments:
-            for attach in request.attachments:
+        # Attachments (List of {filename, content_base64})
+        if attachments:
+            for attach in attachments:
                 file_name = attach.get('filename')
-                content = attach.get('content') # Base64
+                content = attach.get('content') # Base64 string
                 if file_name and content:
                     part = MIMEBase('application', 'octet-stream')
                     part.set_payload(base64.b64decode(content))
@@ -702,19 +946,51 @@ def send_reply(request: SendReplyRequest):
                     part.add_header('Content-Disposition', f'attachment; filename="{file_name}"')
                     msg.attach(part)
 
-        # 3. Connect to SMTP (SSL)
+        # Connect to SMTP (SSL)
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(target_acc['user'], target_acc['pass'])
             server.send_message(msg)
             
-        # 4. Update DB
-        database.update_email_status(request.emailId, "processed", sent_reply=request.replyBody)
-        database.log_event("REPLY_SENT", request.emailId, f"Replied to {request.recipient} from {target_acc['user']}")
-        
-        return {"status": "success", "detail": f"Email sent successfully from {target_acc['user']}"}
-        
+        return True
     except Exception as e:
-        print(f"SMTP Error: {e}")
+        print(f"SMTP Internal Error: {e}")
+        return False
+
+@app.post("/send-reply")
+def send_reply(request: SendReplyRequest):
+    """
+    Sends an email via SMTP and updates the database status.
+    Automatically uses the SMTP credentials of the account that received the email.
+    """
+    try:
+        # Find the original email for metadata (threading)
+        all_emails = database.get_all_emails()
+        original = next((e for e in all_emails if e['id'] == request.emailId), None)
+        
+        if not original:
+            raise HTTPException(status_code=404, detail="Original email not found in database.")
+            
+        owner = original.get('accountOwner')
+        msg_id = original.get('message_id')
+        
+        success = send_email(
+            owner, 
+            request.recipient, 
+            request.subject, 
+            request.replyBody, 
+            request.attachments,
+            msg_id
+        )
+        
+        if success:
+            database.update_email_status(request.emailId, "processed", sent_reply=request.replyBody)
+            database.log_event("REPLY_SENT", request.emailId, f"Replied to {request.recipient} from {owner}")
+            return {"status": "success", "detail": f"Email sent successfully from {owner}"}
+        else:
+            raise HTTPException(status_code=500, detail="SMTP failed to send the message.")
+            
+    except Exception as e:
+        print(f"Send Reply Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/debug-log")

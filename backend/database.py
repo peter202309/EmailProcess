@@ -85,6 +85,10 @@ def init_db():
         c.execute("ALTER TABLE emails ADD COLUMN account_owner TEXT")
     if "attachments_json" not in e_cols_list:
         c.execute("ALTER TABLE emails ADD COLUMN attachments_json TEXT")
+    if "dry_run_mode" not in e_cols_list:
+        c.execute("ALTER TABLE emails ADD COLUMN dry_run_mode INTEGER DEFAULT 0")
+    if "approval_status" not in e_cols_list:
+        c.execute("ALTER TABLE emails ADD COLUMN approval_status TEXT DEFAULT 'pending'")  # pending/approved/rejected
     
     # Create Templates Table
     c.execute('''
@@ -243,7 +247,9 @@ def get_all_emails():
             "sentAt": row['sent_at'],
             "isRead": bool(row['is_read']) if 'is_read' in row.keys() else False,
             "accountOwner": row['account_owner'],
-            "attachments": json.loads(row['attachments_json']) if row['attachments_json'] else []
+            "attachments": json.loads(row['attachments_json']) if row['attachments_json'] else [],
+            "dryRunMode": bool(row['dry_run_mode']) if 'dry_run_mode' in row.keys() else False,
+            "approvalStatus": row['approval_status'] if 'approval_status' in row.keys() else 'pending'
         })
     conn.close()
     return results
@@ -303,6 +309,12 @@ def save_setting(key, value):
     conn.commit()
     conn.close()
 
+def get_bool_setting(key, default=False):
+    settings = get_settings()
+    val = settings.get(key)
+    if val is None: return default
+    return str(val).lower() in ('true', '1', 'yes', 'on')
+
 # --- Logs ---
 def get_logs(limit=50):
     conn = sqlite3.connect(DB_NAME, timeout=30)
@@ -331,14 +343,18 @@ def update_email_status(email_id, status, analysis=None, sent_reply=None):
     
     if analysis and sent_reply:
         analysis_json = json.dumps(analysis)
-        c.execute("UPDATE emails SET status = ?, ai_analysis = ?, sent_reply = ?, sent_at = ? WHERE id = ?", (status, analysis_json, sent_reply, sent_at, email_id))
+        c.execute("UPDATE emails SET status = ?, ai_analysis = ?, sent_reply = ?, sent_at = ?, dry_run_mode = 0, approval_status = 'sent' WHERE id = ?", (status, analysis_json, sent_reply, sent_at, email_id))
     elif analysis:
         analysis_json = json.dumps(analysis)
         c.execute("UPDATE emails SET status = ?, ai_analysis = ? WHERE id = ?", (status, analysis_json, email_id))
     elif sent_reply:
-        c.execute("UPDATE emails SET status = ?, sent_reply = ?, sent_at = ? WHERE id = ?", (status, sent_reply, sent_at, email_id))
+        c.execute("UPDATE emails SET status = ?, sent_reply = ?, sent_at = ?, dry_run_mode = 0, approval_status = 'sent' WHERE id = ?", (status, sent_reply, sent_at, email_id))
     else:
-        c.execute("UPDATE emails SET status = ? WHERE id = ?", (status, email_id))
+        # If just updating status to 'processed' (resolved), also clear dry run
+        if status == 'processed':
+            c.execute("UPDATE emails SET status = ?, dry_run_mode = 0, approval_status = 'resolved' WHERE id = ?", (status, email_id))
+        else:
+            c.execute("UPDATE emails SET status = ? WHERE id = ?", (status, email_id))
     conn.commit()
     conn.close()
 
@@ -401,6 +417,120 @@ def clear_all_emails():
     c.execute("DELETE FROM emails")
     c.execute("DELETE FROM logs")
     c.execute("DELETE FROM tasks")
+    conn.commit()
+    conn.close()
+    return True
+
+def get_pending_drafts():
+    """Get all emails in dry run mode that are pending approval."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("""
+        SELECT * FROM emails 
+        WHERE dry_run_mode = 1 AND approval_status = 'pending' AND (status = 'processed' OR status = 'pending_review')
+        ORDER BY received_at DESC
+    """)
+    rows = c.fetchall()
+    
+    results = []
+    for row in rows:
+        results.append({
+            "id": row['id'],
+            "from": row['from_addr'],
+            "subject": row['subject'],
+            "body": row['body'],
+            "receivedAt": row['received_at'],
+            "status": row['status'],
+            "aiAnalysis": json.loads(row['ai_analysis']) if row['ai_analysis'] else None,
+            "sentReply": row['sent_reply'],
+            "accountOwner": row['account_owner'],
+            "approvalStatus": row['approval_status'],
+            "dryRunMode": bool(row['dry_run_mode'])
+        })
+    
+    conn.close()
+    return results
+
+def approve_draft(email_id, account_owner):
+    """Approve a draft email for sending."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    c.execute("""
+        UPDATE emails 
+        SET approval_status = 'approved' 
+        WHERE id = ? AND account_owner = ?
+    """, (email_id, account_owner))
+    conn.commit()
+    conn.close()
+    return True
+
+def reject_draft(email_id, account_owner):
+    """Reject a draft email."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    c.execute("""
+        UPDATE emails 
+        SET approval_status = 'rejected', dry_run_mode = 0
+        WHERE id = ? AND account_owner = ?
+    """, (email_id, account_owner))
+    conn.commit()
+    conn.close()
+    return True
+
+def reset_email(email_id, account_owner):
+    """Reset an email to unread/no-analysis state for re-evaluation."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    c.execute("""
+        UPDATE emails 
+        SET status = 'unread', 
+            ai_analysis = NULL, 
+            dry_run_mode = 0, 
+            approval_status = 'pending'
+        WHERE id = ? AND account_owner = ?
+    """, (email_id, account_owner))
+    conn.commit()
+    conn.close()
+    return True
+
+def batch_approve_drafts(email_ids_with_owners):
+    """Batch approve multiple drafts. email_ids_with_owners is list of (id, owner) tuples."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    for email_id, owner in email_ids_with_owners:
+        c.execute("""
+            UPDATE emails 
+            SET approval_status = 'approved' 
+            WHERE id = ? AND account_owner = ?
+        """, (email_id, owner))
+    conn.commit()
+    conn.close()
+    return True
+
+def batch_reject_drafts(email_ids_with_owners):
+    """Batch reject multiple drafts."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    for email_id, owner in email_ids_with_owners:
+        c.execute("""
+            UPDATE emails 
+            SET approval_status = 'rejected', dry_run_mode = 0
+            WHERE id = ? AND account_owner = ?
+        """, (email_id, owner))
+    conn.commit()
+    conn.close()
+    return True
+
+def mark_email_as_dry_run(email_id, account_owner):
+    """Mark an email as dry run mode (won't auto-send)."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    c.execute("""
+        UPDATE emails 
+        SET dry_run_mode = 1, approval_status = 'pending', status = 'processed'
+        WHERE id = ? AND account_owner = ?
+    """, (email_id, account_owner))
     conn.commit()
     conn.close()
     return True

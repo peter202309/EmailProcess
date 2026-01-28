@@ -24,7 +24,10 @@ import {
   Paperclip,
   History,
   List,
-  BookOpen
+  BookOpen,
+  Check,
+  ExternalLink,
+  RotateCcw
 } from 'lucide-react';
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -104,8 +107,10 @@ export default function App() {
     autoReplyMode: false,
     maxDailyRepliesPerUser: 3,
     checkInterval: 5,
-    signature: 'AI Assistant | Host Provider'
+    signature: 'AI Assistant | Host Provider',
+    dryRunMode: false
   });
+  const [pendingDrafts, setPendingDrafts] = useState([]);
   const [replyAttachments, setReplyAttachments] = useState([]); // List of {name, content}
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [isAiGenerating, setIsAiGenerating] = useState(false);
@@ -167,10 +172,9 @@ export default function App() {
       const res = await fetch('http://localhost:8010/emails');
       const data = await res.json();
       if (Array.isArray(data)) setEmails(data);
-    } catch (error) {
-      console.error("Failed to fetch emails:", error);
     } finally {
       setIsLoadingEmails(false);
+      fetchPendingDrafts();
     }
   };
 
@@ -182,7 +186,17 @@ export default function App() {
 
       const sRes = await fetch('http://localhost:8010/settings');
       const sData = await sRes.json();
-      if (sData) setConfig(prev => ({ ...prev, ...sData }));
+      if (sData) {
+        // Parse boolean strings
+        const parsedData = {};
+        Object.entries(sData).forEach(([k, v]) => {
+          if (v === 'true') parsedData[k] = true;
+          else if (v === 'false') parsedData[k] = false;
+          else if (k === 'autoReplyThreshold') parsedData[k] = parseFloat(v);
+          else parsedData[k] = v;
+        });
+        setConfig(prev => ({ ...prev, ...parsedData }));
+      }
 
       const lRes = await fetch('http://localhost:8010/logs');
       const lData = await lRes.json();
@@ -191,8 +205,20 @@ export default function App() {
       const tskRes = await fetch('http://localhost:8010/tasks');
       const tskData = await tskRes.json();
       if (Array.isArray(tskData)) setTasks(tskData);
+
+      fetchPendingDrafts();
     } catch (err) {
       console.error("Failed to load initial data", err);
+    }
+  };
+
+  const fetchPendingDrafts = async () => {
+    try {
+      const res = await fetch('http://localhost:8010/pending-drafts');
+      const data = await res.json();
+      if (data.status === 'success') setPendingDrafts(data.drafts);
+    } catch (err) {
+      console.error("Failed to fetch pending drafts", err);
     }
   };
 
@@ -202,6 +228,86 @@ export default function App() {
       const data = await res.json();
       if (Array.isArray(data)) setTasks(data);
     } catch (e) { console.error("Fetch tasks error", e); }
+  };
+
+  const handleApproveDraft = async (draft) => {
+    try {
+      await fetch(`http://localhost:8010/approve-draft?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
+      fetchPendingDrafts();
+    } catch (err) {
+      console.error("Failed to approve draft", err);
+    }
+  };
+
+  const handleRejectDraft = async (draft) => {
+    if (!confirm("确定要拒绝这封回复草稿吗？")) return;
+    try {
+      await fetch(`http://localhost:8010/reject-draft?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
+      fetchPendingDrafts();
+    } catch (err) {
+      console.error("Failed to reject draft", err);
+    }
+  };
+
+  const handleResetEmail = async (draft) => {
+    if (!confirm("确定要重置此邮件进行重新评测吗？(这会清除当前的草稿)")) return;
+    try {
+      await fetch(`http://localhost:8010/reset-email?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
+      fetchPendingDrafts();
+      fetchEmails();
+    } catch (err) {
+      console.error("Failed to reset email", err);
+    }
+  };
+
+  const handleBatchApprove = async () => {
+    const selected = pendingDrafts.filter(d => d.selected).map(d => ({ id: d.id, accountOwner: d.accountOwner }));
+    if (selected.length === 0) return alert("请先勾选需要通过的草稿");
+    try {
+      await fetch('http://localhost:8010/batch-approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emails: selected })
+      });
+      fetchPendingDrafts();
+    } catch (err) {
+      console.error("Batch approve failed", err);
+    }
+  };
+
+  const handleBatchReject = async () => {
+    const selected = pendingDrafts.filter(d => d.selected).map(d => ({ id: d.id, accountOwner: d.accountOwner }));
+    if (selected.length === 0) return alert("请先勾选需要拒绝的草稿");
+    if (!confirm(`确定要批量拒绝这 ${selected.length} 封邮件吗？`)) return;
+    try {
+      await fetch('http://localhost:8010/batch-reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emails: selected })
+      });
+      fetchPendingDrafts();
+    } catch (err) {
+      console.error("Batch reject failed", err);
+    }
+  };
+
+  const handleSendAllApproved = async () => {
+    const approved = pendingDrafts.filter(d => d.approvalStatus === 'approved');
+    if (approved.length === 0) return alert("没有已核准的邮件。请先点击打勾图标核准邮件。");
+    if (!confirm(`准备发送 ${approved.length} 封已核准的邮件，确定继续？`)) return;
+
+    setIsLoadingEmails(true);
+    try {
+      const res = await fetch('http://localhost:8010/send-approved-drafts', { method: 'POST' });
+      const data = await res.json();
+      alert(`成果: 已成功发送 ${data.sent} 封邮件。${data.errors?.length > 0 ? ` 遇到了 ${data.errors.length} 个错误。` : ""}`);
+      fetchPendingDrafts();
+      fetchEmails();
+    } catch (err) {
+      console.error("Failed to send approved drafts", err);
+    } finally {
+      setIsLoadingEmails(false);
+    }
   };
 
   const fetchKbStatus = async () => {
@@ -320,7 +426,19 @@ export default function App() {
   };
 
   const processEmails = async () => {
-    const toProcess = emails.filter(e => e.status === 'unread' || !e.aiAnalysis || (e.aiAnalysis && !e.aiAnalysis.category));
+    // Determine which emails to process. If Dry Run is ON, we might want to include those pending review but not yet draft-sent.
+    const toProcess = emails.filter(e => {
+      // 1. Skip if already processed or has a sent reply
+      if (e.status === 'processed' || e.sentReply) return false;
+
+      // 2. Process if unread or missing analysis
+      if (e.status === 'unread' || !e.aiAnalysis?.category) return true;
+
+      // 3. If Dry Run is ON, catch emails that were partially handled but not put in Dry Run queue
+      if (config.dryRunMode && e.status === 'pending_review' && !e.dryRunMode) return true;
+
+      return false;
+    });
     if (!toProcess.length) return alert("无可处理邮件");
     setIsAiGenerating(true);
     const results = await Promise.all(toProcess.map(async (e) => {
@@ -352,7 +470,7 @@ export default function App() {
         };
 
         // Logic check for Auto-Reply or Auto-Ignore
-        if (config.autoReplyMode) {
+        if (config.autoReplyMode || config.dryRunMode) {
           // Case 1: Doesn't require a reply (Newsletters, etc.)
           if (data.requiresReply === false && confidence >= config.autoReplyThreshold) {
             await fetch(`http://localhost:8010/emails/${e.id}/resolve`, { method: 'POST' });
@@ -360,27 +478,49 @@ export default function App() {
           }
 
           // Case 2: Requires reply and meets confidence/template match
-          if (data.requiresReply !== false && (isAutoMatch || (confidence >= config.autoReplyThreshold))) {
-            // Auto-send
-            const actualAttachments = isAutoMatch ? (data.matchedTemplate.attachments || []) : [];
-            fetch('http://localhost:8010/send-reply', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                emailId: e.id,
-                recipient: e.from,
-                subject: e.subject,
-                replyBody: finalDraft,
-                attachments: actualAttachments.map(a => ({ filename: a.name, content: a.content.split(',')[1] }))
-              })
-            }).catch(err => console.error("Auto-send failed", err));
+          // Note: If Dry Run is ON, we are more lenient so the user can see drafts to review
+          const isMeetsThreshold = isAutoMatch || (confidence >= config.autoReplyThreshold);
+          const isDryRunShouldShow = config.dryRunMode && data.requiresReply !== false;
 
-            return {
-              ...updatedEmail,
-              status: 'processed',
-              sentReply: finalDraft,
-              sentAt: new Date().toLocaleString()
-            };
+          if (isMeetsThreshold || isDryRunShouldShow) {
+            const actualAttachments = isAutoMatch ? (data.matchedTemplate.attachments || []) : [];
+            const replyContent = finalDraft;
+
+            if (config.dryRunMode) {
+              // DRY RUN: Don't send, just prepare and mark as pending draft
+              // New endpoint to mark as dry run (this also sets status to 'processed' in DB)
+              await fetch(`http://localhost:8010/mark-dry-run?emailId=${e.id}&accountOwner=${e.accountOwner}`, { method: 'POST' });
+
+              fetchPendingDrafts(); // Refresh the list
+
+              return {
+                ...updatedEmail,
+                status: 'processed', // Mark as processed in UI but it's a dry run
+                sentReply: replyContent,
+                dryRunMode: true,
+                approvalStatus: 'pending'
+              };
+            } else if (config.autoReplyMode) {
+              // REAL SEND: Auto-send
+              fetch('http://localhost:8010/send-reply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  emailId: e.id,
+                  recipient: e.from,
+                  subject: e.subject,
+                  replyBody: replyContent,
+                  attachments: actualAttachments.map(a => ({ filename: a.name, content: a.content.split(',')[1] }))
+                })
+              }).catch(err => console.error("Auto-send failed", err));
+
+              return {
+                ...updatedEmail,
+                status: 'processed',
+                sentReply: replyContent,
+                sentAt: new Date().toLocaleString()
+              };
+            }
           }
         }
         return updatedEmail;
@@ -557,6 +697,7 @@ export default function App() {
           <div className="mb-4 pb-4 border-b border-slate-700">
             <div className="text-xs text-slate-400 uppercase tracking-wider mb-2 px-2">导航</div>
             <NavItem icon={<AlertTriangle size={20} />} label="待处理" count={statPending} active={activeTab === 'review'} onClick={() => setActiveTab('review')} alert={statPending > 0} />
+            <NavItem icon={<Zap size={20} />} label="批量审阅 (Dry Run)" count={pendingDrafts.length} active={activeTab === 'batch_review'} onClick={() => setActiveTab('batch_review')} alert={pendingDrafts.length > 0} />
             <NavItem icon={<List size={20} />} label="任务中心" count={tasks.filter(t => t.status === 'pending').length} active={activeTab === 'tasks'} onClick={() => setActiveTab('tasks')} />
             <NavItem icon={<Mail size={20} />} label="所有邮件" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
             <NavItem icon={<FileText size={20} />} label="模版" active={activeTab === 'templates'} onClick={() => setActiveTab('templates')} />
@@ -799,7 +940,16 @@ export default function App() {
                       )}
                     </div>
 
-                    <div className="p-6 border-t bg-gray-50 flex justify-end">
+                    <div className="p-6 border-t bg-gray-50 flex justify-end gap-3">
+                      <button
+                        onClick={async () => {
+                          await handleResetEmail(viewingProcessed);
+                          if (viewingProcessed.status === 'processed') setViewingProcessed(null);
+                        }}
+                        className="px-6 py-2 bg-orange-100 text-orange-700 rounded-lg font-bold hover:bg-orange-200 transition-all flex items-center gap-2"
+                      >
+                        <RotateCcw size={16} /> 重新处理
+                      </button>
                       <button
                         onClick={() => setViewingProcessed(null)}
                         className="px-6 py-2 bg-slate-800 text-white rounded-lg font-bold hover:bg-slate-900 transition-all shadow-lg"
@@ -855,6 +1005,11 @@ export default function App() {
                         {e.aiAnalysis?.category && (
                           <span className={`px-2 py-0.5 rounded text-[8px] font-bold border uppercase shadow-sm ${getCategoryStyles(e.aiAnalysis.category)}`}>
                             {e.aiAnalysis.category}
+                          </span>
+                        )}
+                        {(e.aiAnalysis?.sourcesUsed?.length > 0 || e.aiAnalysis?.ragSources?.length > 0) && (
+                          <span className="flex items-center gap-1 text-[8px] font-black text-blue-600 bg-white border border-blue-100 px-1 py-0.5 rounded" title="命中知识库">
+                            <BookOpen size={9} strokeWidth={3} /> RAG
                           </span>
                         )}
                         <div className="text-[10px] text-slate-500 font-mono flex-1">{e.from}</div>
@@ -1082,6 +1237,133 @@ export default function App() {
             </div>
           )}
 
+          {activeTab === 'batch_review' && (
+            <div className="bg-white rounded-xl border flex-1 flex flex-col overflow-hidden">
+              <div className="p-4 border-b font-bold flex justify-between items-center bg-orange-50/50">
+                <div className="flex items-center gap-2">
+                  <Zap size={18} className="text-orange-500" />
+                  <span>批处理工作流 (Dry Run 草稿审阅)</span>
+                  <span className="text-xs font-normal text-gray-500 ml-2">这些邮件已生成 AI 回复但尚未发送</span>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={handleSendAllApproved} className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 flex items-center gap-1.5 shadow-sm">
+                    <Send size={14} /> 一键发送所有已审核
+                  </button>
+                  <button onClick={handleBatchApprove} className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700">批量通过选中</button>
+                  <button onClick={handleBatchReject} className="text-xs bg-red-100 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-200">批量拒绝选中</button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-100 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-6 py-3 w-10">
+                        <input
+                          type="checkbox"
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setPendingDrafts(pendingDrafts.map(d => ({ ...d, selected: true })));
+                            } else {
+                              setPendingDrafts(pendingDrafts.map(d => ({ ...d, selected: false })));
+                            }
+                          }}
+                        />
+                      </th>
+                      <th className="px-6 py-3">发件人/主题</th>
+                      <th className="px-6 py-3">AI 拟稿预览</th>
+                      <th className="px-6 py-3">状态</th>
+                      <th className="px-6 py-3 text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {pendingDrafts.length === 0 ? (
+                      <tr>
+                        <td colSpan="5" className="p-12 text-center text-gray-400">目前没有待审核的草稿</td>
+                      </tr>
+                    ) : (
+                      pendingDrafts.map(d => (
+                        <tr key={`${d.id}-${d.accountOwner}`} className={`hover:bg-gray-50/80 transition-colors ${d.approvalStatus === 'approved' ? 'bg-green-50/30' : ''}`}>
+                          <td className="px-6 py-4">
+                            <input
+                              type="checkbox"
+                              checked={!!d.selected}
+                              onChange={() => {
+                                setPendingDrafts(pendingDrafts.map(item => item.id === d.id && item.accountOwner === d.accountOwner ? { ...item, selected: !item.selected } : item));
+                              }}
+                            />
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="font-bold text-gray-800 line-clamp-1">{d.subject}</div>
+                            <div className="text-[10px] text-gray-400 mt-1 flex items-center gap-1.5">
+                              <span className="font-mono">{d.from}</span>
+                              <span className="text-gray-300">•</span>
+                              <span className="italic">@{d.accountOwner.split('@')[0]}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-xs text-gray-600 italic line-clamp-2 max-w-md bg-white p-2 rounded border border-gray-100 italic">
+                              “{d.sentReply || d.aiAnalysis?.draftReply}”
+                            </div>
+                            {(d.aiAnalysis?.sourcesUsed?.length > 0 || d.aiAnalysis?.ragSources?.length > 0) && (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {(d.aiAnalysis.sourcesUsed || d.aiAnalysis.ragSources || []).map((s, idx) => (
+                                  <span key={idx} className="bg-blue-50 text-blue-600 text-[8px] px-1 py-0.5 rounded border border-blue-100 flex items-center gap-1">
+                                    <BookOpen size={8} /> {s}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-6 py-4">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${d.approvalStatus === 'approved' ? 'bg-green-100 text-green-700' :
+                              d.approvalStatus === 'rejected' ? 'bg-red-100 text-red-700' :
+                                'bg-orange-100 text-orange-700'
+                              }`}>
+                              {d.approvalStatus === 'approved' ? '已核准' : d.approvalStatus === 'rejected' ? '已拒绝' : '待处理'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <div className="flex justify-end gap-2">
+                              <button
+                                onClick={() => handleApproveDraft(d)}
+                                className={`p-1.5 rounded-lg transition-all ${d.approvalStatus === 'approved' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-400 hover:bg-green-100 hover:text-green-600'}`}
+                                title="核准发送"
+                              >
+                                <Check size={14} />
+                              </button>
+                              <button
+                                onClick={() => handleRejectDraft(d)}
+                                className="p-1.5 bg-gray-100 text-gray-400 rounded-lg hover:bg-red-100 hover:text-red-600 transition-all"
+                                title="拒绝/丢弃"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                              <button
+                                onClick={() => handleResetEmail(d)}
+                                className="p-1.5 bg-gray-100 text-gray-400 rounded-lg hover:bg-orange-100 hover:text-orange-600 transition-all"
+                                title="重置并重新评测"
+                              >
+                                <RotateCcw size={14} />
+                              </button>
+                              <button
+                                onClick={() => navigateToEmail(d.id, d.accountOwner)}
+                                className="p-1.5 bg-gray-100 text-gray-400 rounded-lg hover:bg-blue-100 hover:text-blue-600 transition-all"
+                                title="跳转详情"
+                              >
+                                <ExternalLink size={14} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {activeTab === 'logs' && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
               <div className="overflow-x-auto">
@@ -1288,6 +1570,18 @@ export default function App() {
                     <span className="text-sm font-mono bg-gray-100 px-3 py-1 rounded-md font-bold text-gray-700">{Math.round((config.autoReplyThreshold || 0.85) * 100)}%</span>
                   </div>
                 </div>
+                <div className="flex items-center justify-between p-4 bg-orange-50 rounded-lg border border-orange-100">
+                  <div>
+                    <div className="font-bold text-orange-900">开启批量“干跑 (Dry Run)”测试模式</div>
+                    <div className="text-xs text-orange-700">开启后，系统自动生成回复但不发送。您可以在“待审核草稿”中一键审核。</div>
+                  </div>
+                  <button
+                    onClick={() => setConfig({ ...config, dryRunMode: !config.dryRunMode })}
+                    className={`w-12 h-6 rounded-full transition-colors relative ${config.dryRunMode ? 'bg-orange-600' : 'bg-gray-300'}`}
+                  >
+                    <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${config.dryRunMode ? 'left-7' : 'left-1'}`} />
+                  </button>
+                </div>
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">邮件签名</label>
                   <input
@@ -1476,6 +1770,11 @@ function EmailRow({ email, onClick }) {
           {category && (
             <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold border uppercase ${getCategoryStyles(category)}`}>
               {category}
+            </span>
+          )}
+          {(email.aiAnalysis?.sourcesUsed?.length > 0 || email.aiAnalysis?.ragSources?.length > 0) && (
+            <span className="flex items-center gap-1 text-[8px] font-black text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100" title="使用了知识库参考">
+              <BookOpen size={10} strokeWidth={3} /> RAG
             </span>
           )}
           <div className="text-xs text-slate-500 font-medium truncate">{email.from}</div>
