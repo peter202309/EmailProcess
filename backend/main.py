@@ -177,9 +177,11 @@ def read_root():
     return {"status": "ok", "service": "AI Mailguard Backend", "imap_user": EMAIL_ACCOUNT, "gemini_sdk": "v2.0"}
 
 @app.get("/poll-emails")
-def poll_emails():
+def poll_emails(fetch_mode: str = "all"):
     """
-    Connects to IMAP, fetches unseen emails, and adds them to the SQLite DB.
+    Connects to IMAP, fetches emails, and adds them to the SQLite DB.
+    Args:
+        fetch_mode: "all" to fetch all emails, "unread" to fetch only unseen emails
     """
     if not EMAIL_PASSWORD or EMAIL_PASSWORD == "your_password_here":
         return {"error": "Email password not configured in .env"}
@@ -190,8 +192,15 @@ def poll_emails():
         since_date = date.today() - timedelta(days=1)
         
         with MailBox(IMAP_SERVER).login(EMAIL_ACCOUNT, EMAIL_PASSWORD) as mailbox:
-            # Fetch ALL messages from the last 24 hours (using date_gte for IMAP)
-            for msg in mailbox.fetch(AND(date_gte=since_date), reverse=True):
+            # Build search criteria based on fetch_mode
+            if fetch_mode == "unread":
+                # Fetch only UNSEEN emails from last 24 hours
+                search_criteria = AND(date_gte=since_date, seen=False)
+            else:
+                # Fetch ALL emails from last 24 hours (default)
+                search_criteria = AND(date_gte=since_date)
+            
+            for msg in mailbox.fetch(search_criteria, reverse=True):
                 # Extract Threading Info
                 message_id = msg.headers.get('message-id', [None])[0]
                 references = msg.headers.get('references', [None])[0]
@@ -199,6 +208,9 @@ def poll_emails():
                 
                 # Simple thread_id logic: use References or Message-ID
                 thread_id = references.split()[0] if references else (in_reply_to or message_id)
+                
+                # Check IMAP SEEN flag to determine read status
+                is_read = '\\Seen' in msg.flags
 
                 email_obj = {
                     "id": str(msg.uid),
@@ -209,7 +221,8 @@ def poll_emails():
                     "status": "unread",
                     "aiAnalysis": None,
                     "message_id": message_id,
-                    "thread_id": thread_id
+                    "thread_id": thread_id,
+                    "is_read": 1 if is_read else 0
                 }
                 if database.save_email(email_obj):
                     new_count += 1
@@ -223,6 +236,15 @@ def poll_emails():
 @app.get("/emails")
 def get_emails():
     return database.get_all_emails()
+
+@app.post("/emails/{email_id}/mark-read")
+def mark_email_as_read(email_id: str):
+    """Mark an email as read in the database."""
+    try:
+        database.mark_as_read(email_id)
+        return {"status": "success", "message": f"Email {email_id} marked as read"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 @app.post("/analyze-email")
 async def analyze_email(request: ProcessingRequest):

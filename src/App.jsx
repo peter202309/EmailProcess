@@ -111,6 +111,7 @@ export default function App() {
   const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
   const [aiProvider, setAiProvider] = useState('gemini'); // 'gemini' or 'groq'
+  const [fetchMode, setFetchMode] = useState('all'); // 'all' or 'unread'
   const [kbStatus, setKbStatus] = useState({ active: false, doc_count: 0 });
   const [tasks, setTasks] = useState([]);
 
@@ -122,7 +123,7 @@ export default function App() {
   const fetchEmails = async () => {
     setIsLoadingEmails(true);
     try {
-      await fetch('http://localhost:8000/poll-emails');
+      await fetch(`http://localhost:8000/poll-emails?fetch_mode=${fetchMode}`);
       const res = await fetch('http://localhost:8000/emails');
       const data = await res.json();
       if (Array.isArray(data)) setEmails(data);
@@ -177,8 +178,19 @@ export default function App() {
     fetchKbStatus();
   }, []);
 
-  const handleSelectEmail = (email) => {
+  const handleSelectEmail = async (email) => {
     setSelectedEmail(email);
+
+    // Mark as read if not already read
+    if (!email.isRead) {
+      try {
+        await fetch(`http://localhost:8000/emails/${email.id}/mark-read`, { method: 'POST' });
+        // Update local state
+        setEmails(prev => prev.map(e => e.id === email.id ? { ...e, isRead: true } : e));
+      } catch (error) {
+        console.error("Failed to mark email as read:", error);
+      }
+    }
   };
 
   const handleSaveConfig = async () => {
@@ -487,12 +499,39 @@ Content: ${selectedEmail.body}`;
           {activeTab === 'review' && (
             <div className="flex h-full gap-6 overflow-hidden">
               <div className="w-1/3 bg-white border rounded-xl overflow-hidden flex flex-col">
+                {/* Fetch Mode Toggle */}
+                <div className="p-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b flex items-center justify-between">
+                  <div className="text-xs font-bold text-gray-700">邮件筛选:</div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setFetchMode('all'); fetchEmails(); }}
+                      className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${fetchMode === 'all'
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                        }`}
+                    >
+                      所有邮件
+                    </button>
+                    <button
+                      onClick={() => { setFetchMode('unread'); fetchEmails(); }}
+                      className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${fetchMode === 'unread'
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                        }`}
+                    >
+                      仅未读
+                    </button>
+                  </div>
+                </div>
                 <div className="p-4 bg-gray-50 border-b font-bold">审核队列 ({statPending})</div>
                 <div className="flex-1 overflow-auto divide-y">
                   {safeEmails.filter(e => e.status !== 'processed').map(e => (
-                    <div key={e.id} onClick={() => handleSelectEmail(e)} className={`p-4 cursor-pointer hover:bg-blue-50 transition-all ${selectedEmail?.id === e.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''} ${e.aiAnalysis?.isUrgent ? 'border-red-400 border-l-4 bg-red-50' : ''}`}>
+                    <div key={e.id} onClick={() => handleSelectEmail(e)} className={`p-4 cursor-pointer hover:bg-blue-50 transition-all ${selectedEmail?.id === e.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''} ${e.aiAnalysis?.isUrgent ? 'border-red-400 border-l-4 bg-red-50' : ''} ${!e.isRead ? 'bg-blue-50/20' : ''}`}>
                       <div className="flex justify-between items-start mb-1 gap-2">
-                        <div className={`font-bold text-sm truncate flex-1 ${e.aiAnalysis?.isUrgent ? 'text-red-700' : ''}`}>{e.subject}</div>
+                        <div className="flex items-center gap-2 flex-1">
+                          {!e.isRead && <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse flex-shrink-0" />}
+                          <div className={`font-bold text-sm truncate ${e.aiAnalysis?.isUrgent ? 'text-red-700' : ''} ${!e.isRead ? 'font-extrabold' : ''}`}>{e.subject}</div>
+                        </div>
                         {e.sentReply && <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[8px] font-bold rounded uppercase whitespace-nowrap">已回复</span>}
                       </div>
                       <div className="flex items-center gap-2 mt-1">
@@ -917,12 +956,14 @@ function getCategoryStyles(category) {
 function EmailRow({ email, onClick }) {
   const isUrgent = email.aiAnalysis?.isUrgent;
   const category = email.aiAnalysis?.category || (email.aiAnalysis ? "Information" : null);
+  const isUnread = !email.isRead;
 
   return (
-    <div onClick={onClick} className={`p-4 hover:bg-gray-50 cursor-pointer flex justify-between items-center border-l-4 transition-all ${isUrgent ? 'bg-red-50/50 border-red-500' : 'border-gray-100 hover:border-blue-500'}`}>
+    <div onClick={onClick} className={`p-4 hover:bg-gray-50 cursor-pointer flex justify-between items-center border-l-4 transition-all ${isUrgent ? 'bg-red-50/50 border-red-500' : 'border-gray-100 hover:border-blue-500'} ${isUnread ? 'bg-blue-50/30' : ''}`}>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 mb-1">
-          <div className={`font-bold text-sm truncate ${isUrgent ? 'text-red-700 underline decoration-red-200 decoration-2 underline-offset-4' : ''}`}>
+          {isUnread && <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />}
+          <div className={`font-bold text-sm truncate ${isUrgent ? 'text-red-700 underline decoration-red-200 decoration-2 underline-offset-4' : ''} ${isUnread ? 'font-extrabold' : ''}`}>
             {email.subject}
           </div>
           {isUrgent && <span className="px-1.5 py-0.5 bg-red-600 text-white text-[8px] font-bold rounded animate-pulse shadow-sm">CRITICAL</span>}

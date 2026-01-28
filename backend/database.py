@@ -20,9 +20,18 @@ def init_db():
             message_id TEXT,
             thread_id TEXT,
             sent_reply TEXT,
-            sent_at TEXT
+            sent_at TEXT,
+            is_read INTEGER DEFAULT 0
         )
     ''')
+    
+    # Migration: Add is_read column if it doesn't exist
+    try:
+        c.execute("ALTER TABLE emails ADD COLUMN is_read INTEGER DEFAULT 0")
+        conn.commit()
+        print("Added is_read column to emails table")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     
     # Create Templates Table
     c.execute('''
@@ -120,8 +129,8 @@ def save_email(email_dict):
 
     if existing is None:
         c.execute('''
-            INSERT INTO emails (id, from_addr, subject, body, received_at, status, ai_analysis, message_id, thread_id, sent_reply, sent_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO emails (id, from_addr, subject, body, received_at, status, ai_analysis, message_id, thread_id, sent_reply, sent_at, is_read)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             uid,
             email_dict['from'],
@@ -133,7 +142,8 @@ def save_email(email_dict):
             msg_id,
             email_dict.get('thread_id'),
             email_dict.get('sent_reply'),
-            email_dict.get('sent_at')
+            email_dict.get('sent_at'),
+            email_dict.get('is_read', 0)
         ))
         conn.commit()
         conn.close()
@@ -175,10 +185,19 @@ def get_all_emails():
             "message_id": row['message_id'],
             "thread_id": row['thread_id'],
             "sentReply": row['sent_reply'],
-            "sentAt": row['sent_at']
+            "sentAt": row['sent_at'],
+            "isRead": bool(row['is_read']) if 'is_read' in row.keys() else False
         })
     conn.close()
     return results
+
+def mark_as_read(email_id):
+    """Mark an email as read."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("UPDATE emails SET is_read = 1 WHERE id = ?", (email_id,))
+    conn.commit()
+    conn.close()
 
 # --- Templates ---
 def get_templates():
