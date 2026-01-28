@@ -496,12 +496,12 @@ Content: ${selectedEmail.body}`;
                         {e.sentReply && <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[8px] font-bold rounded uppercase whitespace-nowrap">已回复</span>}
                       </div>
                       <div className="flex items-center gap-2 mt-1">
-                        <div className="text-[10px] text-gray-500 truncate flex-1">{e.from}</div>
                         {e.aiAnalysis?.category && (
                           <span className={`px-2 py-0.5 rounded text-[8px] font-bold border uppercase shadow-sm ${getCategoryStyles(e.aiAnalysis.category)}`}>
                             {e.aiAnalysis.category}
                           </span>
                         )}
+                        <div className="text-[10px] text-gray-500 truncate flex-1">{e.from}</div>
                       </div>
                     </div>
                   ))}
@@ -929,12 +929,12 @@ function EmailRow({ email, onClick }) {
           {email.sentReply && <span className="px-1.5 py-0.5 bg-green-50 text-green-600 text-[8px] font-bold rounded border border-green-100">REPLIED</span>}
         </div>
         <div className="flex items-center gap-3">
-          <div className="text-xs text-gray-400 truncate">{email.from}</div>
           {category && (
             <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold border uppercase ${getCategoryStyles(category)}`}>
               {category}
             </span>
           )}
+          <div className="text-xs text-gray-400 truncate">{email.from}</div>
         </div>
       </div>
       <div className="text-[10px] text-gray-300 ml-4 font-mono">{email.receivedAt}</div>
