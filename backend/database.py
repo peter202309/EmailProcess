@@ -42,6 +42,7 @@ def init_db():
                 sent_at TEXT,
                 is_read INTEGER DEFAULT 0,
                 account_owner TEXT,
+                attachments_json TEXT, -- Metadata for attachments
                 PRIMARY KEY (id, account_owner)
             )
         ''')
@@ -82,6 +83,8 @@ def init_db():
         c.execute("ALTER TABLE emails ADD COLUMN is_read INTEGER DEFAULT 0")
     if "account_owner" not in e_cols_list:
         c.execute("ALTER TABLE emails ADD COLUMN account_owner TEXT")
+    if "attachments_json" not in e_cols_list:
+        c.execute("ALTER TABLE emails ADD COLUMN attachments_json TEXT")
     
     # Create Templates Table
     c.execute('''
@@ -180,8 +183,8 @@ def save_email(email_dict):
 
     if existing is None:
         c.execute('''
-            INSERT INTO emails (id, from_addr, subject, body, received_at, status, ai_analysis, message_id, thread_id, sent_reply, sent_at, is_read, account_owner)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO emails (id, from_addr, subject, body, received_at, status, ai_analysis, message_id, thread_id, sent_reply, sent_at, is_read, account_owner, attachments_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             uid,
             email_dict['from'],
@@ -195,7 +198,8 @@ def save_email(email_dict):
             email_dict.get('sent_reply'),
             email_dict.get('sent_at'),
             email_dict.get('is_read', 0),
-            owner
+            owner,
+            json.dumps(email_dict.get('attachments', []))
         ))
         conn.commit()
         conn.close()
@@ -238,7 +242,8 @@ def get_all_emails():
             "sentReply": row['sent_reply'],
             "sentAt": row['sent_at'],
             "isRead": bool(row['is_read']) if 'is_read' in row.keys() else False,
-            "accountOwner": row['account_owner'] # Added
+            "accountOwner": row['account_owner'],
+            "attachments": json.loads(row['attachments_json']) if row['attachments_json'] else []
         })
     conn.close()
     return results

@@ -2,7 +2,8 @@ import os
 import time
 import glob
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
@@ -102,6 +103,7 @@ class ProcessingRequest(BaseModel):
     draftReply: Optional[str] = None
     updateOnly: Optional[bool] = False
     instruction: Optional[str] = None # For manual overrides like tone or custom prompts
+    attachmentPath: Optional[str] = None # If we only want to analyze a specific file
 
 
 
@@ -193,9 +195,15 @@ def rebuild_kb():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.get("/")
-def read_root():
-    return {"status": "ok", "service": "AI Mailguard Backend", "imap_user": EMAIL_ACCOUNT, "gemini_sdk": "v2.0"}
+@app.get("/attachments/{filename}")
+def get_attachment(filename: str):
+    """Serve a saved attachment file."""
+    # Security: Ensure filename doesn't contain path traversal
+    safe_filename = os.path.basename(filename)
+    file_path = os.path.join("attachments", safe_filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return FileResponse(file_path)
 
 def clean_html(html_content):
     """Converts HTML to clean text, removing scripts and styles."""
@@ -259,6 +267,26 @@ def poll_emails(fetch_mode: str = "all"):
                     else:
                         body_text = msg.text or ""
 
+                    # Capture Attachments
+                    msg_attachments = []
+                    for att in msg.attachments:
+                        # Create a unique filename to avoid collisions
+                        # Format: uid_account_filename
+                        safe_acc = user.split('@')[0]
+                        unique_filename = f"{msg.uid}_{safe_acc}_{att.filename}"
+                        file_save_path = os.path.join("attachments", unique_filename)
+                        
+                        # Save the file content
+                        with open(file_save_path, "wb") as f:
+                            f.write(att.payload)
+                        
+                        msg_attachments.append({
+                            "filename": att.filename,
+                            "storedName": unique_filename,
+                            "contentType": att.content_type,
+                            "size": att.size
+                        })
+
                     email_obj = {
                         "id": str(msg.uid),
                         "from": msg.from_,
@@ -270,7 +298,8 @@ def poll_emails(fetch_mode: str = "all"):
                         "message_id": message_id,
                         "thread_id": thread_id,
                         "is_read": 1 if is_read else 0,
-                        "account_owner": user 
+                        "account_owner": user,
+                        "attachments": msg_attachments
                     }
                     if database.save_email(email_obj):
                         new_total += 1
@@ -407,6 +436,84 @@ async def analyze_email(request: ProcessingRequest):
         "ragSources": analysis_payload["ragSources"],
         "matchedTemplate": matched_template
     }
+
+@app.post("/analyze-attachment")
+async def analyze_attachment(emailId: str, storedName: str):
+    """
+    Specifically analyzes an attachment using Vision capabilities.
+    """
+    file_path = os.path.join("attachments", storedName)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Attachment file not found")
+        
+    # Detect file type
+    is_image = storedName.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
+    is_pdf = storedName.lower().endswith('.pdf')
+    
+    if not (is_image or is_pdf):
+        return {"status": "error", "message": "Only images and PDFs are supported for deep analysis"}
+
+    # Use Gemini's vision capability
+    if not client:
+        return {"status": "error", "message": "Gemini API client not initialized"}
+
+    try:
+        mime_type = "application/pdf" if is_pdf else "image/jpeg"
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+
+        prompt = """
+        You are a document analysis assistant. Analyze this attachment and extract key information.
+        If it is a receipt/invoice: Extract amounts, dates, and vendor.
+        If it is a medical document/certificate: Summarize the diagnosis and duration if applicable.
+        If it is an ID: Verify names and validity.
+        
+        Return a clear, bulleted summary in the same language as the document.
+        """
+        
+        # Prepare parts for Gemini 2.0
+        from google.genai.types import Part
+        parts = [
+            Part.from_bytes(data=file_bytes, mime_type=mime_type),
+            Part.from_text(text=prompt)
+        ]
+        
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=parts
+        )
+        
+        analysis_text = response.text
+        
+        # Log the event
+        database.log_event("ATTACHMENT_ANALYSIS", emailId, f"Analyzed {storedName}: {analysis_text[:100]}...")
+        
+        return {"status": "success", "analysis": analysis_text}
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Attachment analysis error: {error_msg}")
+        
+        # Check for quota/rate limit errors
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
+            user_message = """⚠️ **Gemini API 配额已用尽**
+
+您的 Gemini API 免费配额已达到限制。请选择以下解决方案：
+
+1. **等待重置** - 免费配额每天重置，请稍后再试
+2. **升级到付费计划** - 访问 https://ai.google.dev/pricing 了解详情
+3. **使用其他 API Key** - 在 .env 文件中更换 VITE_GEMINI_API_KEY
+
+**当前限制：**
+- 免费版：15 RPM (每分钟请求数)
+- 免费版：1,500 RPD (每天请求数)
+
+💡 提示：附件分析功能暂时不可用，但邮件分析和回复功能仍可正常使用（使用 OpenAI）。"""
+            
+            database.log_event("ATTACHMENT_ANALYSIS_ERROR", emailId, f"Quota exceeded for {storedName}")
+            return {"status": "error", "message": user_message}
+        
+        # Generic error
+        return {"status": "error", "message": f"分析失败: {error_msg}"}
 
 async def call_ai_with_fallback(prompt: str, primary_provider: str):
     """

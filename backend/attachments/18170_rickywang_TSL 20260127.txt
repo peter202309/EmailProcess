@@ -1,0 +1,42 @@
+*************************************************************************       
+*                   I A T A   OPTAT  DAILY-SALES-REPORT                 *       
+*                                                                       *       
+*   OFFICE : YYZ101     AGENT CODE : 61554022    DEVICE : 1/  82518     *       
+*   DATE   : 27JAN26                             TIME   :0000-2359      *       
+-------------------------------------------------------------------------       
+  TKT-NUMBER      ORIG-DEST  COLLECTION    TAXS  COMM    PNR   FOP  AGENT       
+-------------------------------------------------------------------------       
+781-2407410216    YTO YTO       1950.00   430.62  0.00  NJB48R  CC  42685       
+*=======================================================================*       
+  TOTAL TICKETS:       1 (      0 TICKETS VOID /      0  TICKETS REFUND)        
+ -----------------------------------------------------------------------        
+ NORMAL COLLECTION -- AMOUNT :     1950.00  CAD                                 
+ NORMAL TOTAL  TAX -- AMOUNT :      430.62  CAD                                 
+ NORMAL COMMISSION -- AMOUNT :        0.00  CAD                                 
+ NORMAL CARRIERS   -- AMOUNT :     1950.00  CAD                                 
+ ---------------REFUND TICKETS STATISTICS INFORMAT----------------              
+ REFUND COLLECTION -- AMOUNT :        0.00  CAD                                 
+ REFUND TOTAL  TAX -- AMOUNT :        0.00  CAD                                 
+ REFUND COMMISSION -- AMOUNT :        0.00  CAD                                 
+ REFUND DEDUCTION  -- AMOUNT :        0.00  CAD                                 
+*=======================================================================*  
+DETR:TN/7812407410216                                                     ETS 
+ISSUED BY: CHINA EASTERN AIRLINES    ORG/DST: YTO/YTO                 ARL-I     
+E/R: Q/NON-END. PENALTY APPLY.                                                  
+TOUR CODE:                                                                      
+PASSENGER: CHENG/ROSA RUOSHA(UM9) (CHILD)                                       
+EXCH:                               CONJ TKT:                                   
+O FM:1YYZ MU     208  L 04MAR 1525 OK LAE01NLN   04MAR6/04MAR6 1PC OPEN FOR USE 
+     3 T1 RL:NJB48R  /                                                          
+O TO:2PVG MU     207  N 20MAR 1230 OK NME01NLN   20MAR6/20MAR6 1PC OPEN FOR USE 
+     T13  RL:NJB48R  /                                                          
+  TO: YYZ                                                                       
+FC:A 04MAR26YTO MU SHA731.07MU YTO673.45NUC1404.52END ROE1.388363 XT EXEM     
+PT CN351.00YQ                                                                   
+FARE:           CAD 1950.00|FOP:CC VI4520XXXXXXXX5459 0229                      
+TAX:            CAD 34.42CA|OI:                                                 
+TAX:            CAD 45.20W1|                                                    
+TAX:               EXEMPTCN|FOR ALL TAXES: DETR:X                              
+TOTAL:          CAD 2380.62|TKTN: 781-2407410216      
+========================================================================
+                                  end
