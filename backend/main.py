@@ -447,7 +447,7 @@ def poll_emails(fetch_mode: str = "all"):
                         "from": msg.from_,
                         "subject": msg.subject,
                         "body": body_text,
-                        "receivedAt": msg.date.strftime("%Y-%m-%d %H:%M:%S"),
+                        "receivedAt": msg.date.astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "unread",
                         "aiAnalysis": None,
                         "message_id": message_id,
