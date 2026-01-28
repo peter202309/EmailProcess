@@ -10,3 +10,5 @@ docx2txt
 langchain-community
 langchain-google-genai
 faiss-cpu
+beautifulsoup4
+langchain-openai

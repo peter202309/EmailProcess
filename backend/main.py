@@ -9,6 +9,8 @@ from google import genai
 import requests
 from dotenv import load_dotenv
 from imap_tools import MailBox, AND
+from bs4 import BeautifulSoup
+import re
 
 from rag import RAGService
 import database
@@ -54,6 +56,24 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
 EMAIL_ACCOUNT = os.getenv("EMAIL_ACCOUNT")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
+def get_all_accounts():
+    """Returns a list of {user, password} dicts from .env"""
+    accounts = []
+    # Primary: List of accounts
+    multi = os.getenv("EMAIL_ACCOUNTS")
+    if multi:
+        for item in multi.split(","):
+            if ":" in item:
+                u, p = item.split(":", 1)
+                accounts.append({"user": u.strip(), "pass": p.strip()})
+    
+    # Fallback to single account if not already in list
+    if EMAIL_ACCOUNT and EMAIL_PASSWORD:
+        if not any(a['user'] == EMAIL_ACCOUNT for a in accounts):
+            accounts.append({"user": EMAIL_ACCOUNT, "pass": EMAIL_PASSWORD})
+            
+    return accounts
+
 # Models
 class SendReplyRequest(BaseModel):
     emailId: str
@@ -81,6 +101,7 @@ class ProcessingRequest(BaseModel):
     intent: Optional[str] = None
     draftReply: Optional[str] = None
     updateOnly: Optional[bool] = False
+    instruction: Optional[str] = None # For manual overrides like tone or custom prompts
 
 
 
@@ -176,66 +197,105 @@ def rebuild_kb():
 def read_root():
     return {"status": "ok", "service": "AI Mailguard Backend", "imap_user": EMAIL_ACCOUNT, "gemini_sdk": "v2.0"}
 
+def clean_html(html_content):
+    """Converts HTML to clean text, removing scripts and styles."""
+    if not html_content:
+        return ""
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+        # Remove script and style elements
+        for script_or_style in soup(["script", "style"]):
+            script_or_style.decompose()
+        # Get text
+        text = soup.get_text(separator=' ')
+        # Clean up whitespace
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        return text
+    except Exception:
+        # Fallback to simple regex if BS4 fails
+        clean = re.compile('<.*?>')
+        return re.sub(clean, '', html_content)
+
 @app.get("/poll-emails")
 def poll_emails(fetch_mode: str = "all"):
     """
-    Connects to IMAP, fetches emails, and adds them to the SQLite DB.
-    Args:
-        fetch_mode: "all" to fetch all emails, "unread" to fetch only unseen emails
+    Connects to IMAP for all configured accounts, fetches emails, and adds them to the SQLite DB.
     """
-    if not EMAIL_PASSWORD or EMAIL_PASSWORD == "your_password_here":
-        return {"error": "Email password not configured in .env"}
+    accounts = get_all_accounts()
+    if not accounts:
+        return {"error": "No email accounts configured in .env (set EMAIL_ACCOUNTS or EMAIL_ACCOUNT/PASSWORD)"}
 
-    new_count = 0
-    try:
-        from datetime import date, timedelta
-        since_date = date.today() - timedelta(days=1)
-        
-        with MailBox(IMAP_SERVER).login(EMAIL_ACCOUNT, EMAIL_PASSWORD) as mailbox:
-            # Build search criteria based on fetch_mode
-            if fetch_mode == "unread":
-                # Fetch only UNSEEN emails from last 24 hours
-                search_criteria = AND(date_gte=since_date, seen=False)
-            else:
-                # Fetch ALL emails from last 24 hours (default)
-                search_criteria = AND(date_gte=since_date)
-            
-            for msg in mailbox.fetch(search_criteria, reverse=True):
-                # Extract Threading Info
-                message_id = msg.headers.get('message-id', [None])[0]
-                references = msg.headers.get('references', [None])[0]
-                in_reply_to = msg.headers.get('in-reply-to', [None])[0]
+    new_total = 0
+    errors = []
+    
+    from datetime import date, timedelta
+    since_date = date.today() - timedelta(days=1)
+    
+    for acc in accounts:
+        user = acc['user']
+        pwd = acc['pass']
+        try:
+            with MailBox(IMAP_SERVER).login(user, pwd) as mailbox:
+                # Build search criteria based on fetch_mode
+                if fetch_mode == "unread":
+                    search_criteria = AND(date_gte=since_date, seen=False)
+                else:
+                    search_criteria = AND(date_gte=since_date)
                 
-                # Simple thread_id logic: use References or Message-ID
-                thread_id = references.split()[0] if references else (in_reply_to or message_id)
-                
-                # Check IMAP SEEN flag to determine read status
-                is_read = '\\Seen' in msg.flags
+                for msg in mailbox.fetch(search_criteria, reverse=True):
+                    message_id = msg.headers.get('message-id', [None])[0]
+                    references = msg.headers.get('references', [None])[0]
+                    in_reply_to = msg.headers.get('in-reply-to', [None])[0]
+                    
+                    thread_id = references.split()[0] if references else (in_reply_to or message_id)
+                    is_read = '\\Seen' in msg.flags
 
-                email_obj = {
-                    "id": str(msg.uid),
-                    "from": msg.from_,
-                    "subject": msg.subject,
-                    "body": msg.text or msg.html,
-                    "receivedAt": msg.date.strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": "unread",
-                    "aiAnalysis": None,
-                    "message_id": message_id,
-                    "thread_id": thread_id,
-                    "is_read": 1 if is_read else 0
-                }
-                if database.save_email(email_obj):
-                    new_count += 1
+                    raw_body = msg.text or msg.html
+                    # If it's HTML only, clean it
+                    if not msg.text and msg.html:
+                        body_text = clean_html(msg.html)
+                    else:
+                        body_text = msg.text or ""
+
+                    email_obj = {
+                        "id": str(msg.uid),
+                        "from": msg.from_,
+                        "subject": msg.subject,
+                        "body": body_text,
+                        "receivedAt": msg.date.strftime("%Y-%m-%d %H:%M:%S"),
+                        "status": "unread",
+                        "aiAnalysis": None,
+                        "message_id": message_id,
+                        "thread_id": thread_id,
+                        "is_read": 1 if is_read else 0,
+                        "account_owner": user 
+                    }
+                    if database.save_email(email_obj):
+                        new_total += 1
+        except Exception as e:
+            err_msg = f"IMAP Error for {user}: {e}"
+            print(err_msg)
+            errors.append(err_msg)
                 
-        all_emails = database.get_all_emails()
-        return {"status": "success", "new_emails_count": new_count, "total_emails": len(all_emails), "emails": all_emails}
-    except Exception as e:
-        print(f"IMAP Error: {e}")
-        return {"status": "error", "detail": str(e)}
+    all_emails = database.get_all_emails()
+    return {
+        "status": "success" if not errors else "partial_success", 
+        "new_emails_count": new_total, 
+        "total_emails": len(all_emails), 
+        "errors": errors if errors else None
+    }
 
 @app.get("/emails")
 def get_emails():
     return database.get_all_emails()
+
+@app.post("/reset-emails")
+def reset_emails():
+    """Wipe all emails, logs, and tasks."""
+    database.clear_all_emails()
+    return {"status": "success", "message": "Database cleared"}
 
 @app.post("/emails/{email_id}/mark-read")
 def mark_email_as_read(email_id: str):
@@ -243,6 +303,16 @@ def mark_email_as_read(email_id: str):
     try:
         database.mark_as_read(email_id)
         return {"status": "success", "message": f"Email {email_id} marked as read"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+@app.post("/emails/{email_id}/resolve")
+def resolve_email(email_id: str):
+    """Mark an email as processed (resolved) without sending a reply."""
+    try:
+        database.update_email_status(email_id, "processed")
+        database.log_event("RESOLVED_NO_REPLY", email_id, "Marked as resolved without reply")
+        return {"status": "success", "message": f"Email {email_id} marked as resolved"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
@@ -278,22 +348,32 @@ async def analyze_email(request: ProcessingRequest):
                 break
 
     # 2. Retrieve RAG Context
-    rag_context = rag_service.search(f"{request.emailSubject}\n{request.emailBody}")
+    # 1. RAG Search
+    rag_results = rag_service.search(f"{request.emailSubject}\n{request.emailBody}")
+    
+    # Format context for AI with clear source attribution
+    context_str = ""
+    if rag_results:
+        context_str = "\n\n".join([f"[Source: {r['source']}]\n{r['content']}" for r in rag_results])
     
     prompt = f"""
     You are a professional customer service assistant. Analyze this email using the provided knowledge base context if relevant.
     
     [Knowledge Base Context]:
-    {rag_context}
+    {context_str if context_str else "No relevant context found in Knowledge Base."}
     
     [Email]:
     Subject: {request.emailSubject}
     Body: {request.emailBody}
     
+    [Special Instructions]:
+    {request.instruction if request.instruction else "Generate a professional analysis and draft reply."}
+    
     Requirements:
     1. **MANDATORY Language Matching**: Detect the language of the original email. You MUST generate the 'draftReply' in the EXACT SAME language.
     2. **Confidence Score**: Assign a 'confidence' score between 0.0 and 1.0 based on how well the context matches the query.
-    3. **Reply Detection**: Determine if this email requires a reply. Newsletters, notifications, automated messages, and informational emails do NOT require replies.
+    3. **Sources**: If you use information from the Knowledge Base Context, list the source filenames (e.g., 'policy.pdf') in 'sourcesUsed'.
+    4. **Reply Detection**: Determine if this email requires a reply. Newsletters, notifications, automated messages, and informational emails do NOT require replies.
     
     Return EXACTLY a JSON object with:
     - category: (One of: Urgent, Billing, Technical, Sales, Support, Information, Spam, Newsletter)
@@ -303,6 +383,7 @@ async def analyze_email(request: ProcessingRequest):
     - requiresReply: (boolean, TRUE if this email needs a response, FALSE for newsletters/notifications/automated messages)
     - suggestedAction: (auto_reply, manual_review, ignore)
     - draftReply: (professional response in the detected language, ONLY if requiresReply is TRUE, otherwise empty string)
+    - sourcesUsed: (list of strings, filenames used from context)
     """
 
     analysis_payload = await call_ai_with_fallback(prompt, request.provider)
@@ -311,11 +392,13 @@ async def analyze_email(request: ProcessingRequest):
     database.update_email_status(request.emailId, "pending_review", analysis=analysis_payload)
 
     return {
-        "analysis": analysis_payload["draftReply"],
-        "confidence": analysis_payload["confidence"],
-        "isUrgent": analysis_payload["isUrgent"],
-        "category": analysis_payload["category"],
-        "intent": analysis_payload["intent"],
+        "analysis": analysis_payload.get("draftReply", ""),
+        "confidence": analysis_payload.get("confidence", 0.0),
+        "isUrgent": analysis_payload.get("isUrgent", False),
+        "category": analysis_payload.get("category", "Information"),
+        "intent": analysis_payload.get("intent", ""),
+        "sourcesUsed": analysis_payload.get("sourcesUsed", []),
+        "ragSources": list(set([r['source'] for r in rag_results])) if rag_results else [],
         "matchedTemplate": matched_template
     }
 
@@ -460,23 +543,35 @@ def delete_task(task_id: int):
 def send_reply(request: SendReplyRequest):
     """
     Sends an email via SMTP and updates the database status.
+    Automatically uses the SMTP credentials of the account that received the email.
     """
-    if not EMAIL_PASSWORD or EMAIL_PASSWORD == "your_password_here":
-        raise HTTPException(status_code=500, detail="Email password not configured.")
-
     try:
-        # Get Original Email for Threading
+        # 1. Find the email and its owner
         all_emails = database.get_all_emails()
         original = next((e for e in all_emails if e['id'] == request.emailId), None)
         
-        # 1. Create Message
+        if not original:
+            raise HTTPException(status_code=404, detail="Original email not found in database.")
+            
+        owner = original.get('accountOwner')
+        accounts = get_all_accounts()
+        target_acc = next((a for a in accounts if a['user'] == owner), None)
+        
+        # Fallback to current default if owner not found in accounts list (e.g. env changed)
+        if not target_acc and accounts:
+            target_acc = accounts[0]
+            
+        if not target_acc:
+             raise HTTPException(status_code=500, detail="No valid email account found for sending.")
+
+        # 2. Create Message
         msg = MIMEMultipart()
-        msg['From'] = EMAIL_ACCOUNT
+        msg['From'] = target_acc['user']
         msg['To'] = request.recipient
         msg['Subject'] = f"Re: {request.subject}" if not request.subject.startswith("Re:") else request.subject
         
         # Threading Headers
-        if original and original.get('message_id'):
+        if original.get('message_id'):
             msg['In-Reply-To'] = original['message_id']
             msg['References'] = original['message_id']
         
@@ -494,16 +589,16 @@ def send_reply(request: SendReplyRequest):
                     part.add_header('Content-Disposition', f'attachment; filename="{file_name}"')
                     msg.attach(part)
 
-        # 2. Connect to SMTP (SSL)
+        # 3. Connect to SMTP (SSL)
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(EMAIL_ACCOUNT, EMAIL_PASSWORD)
+            server.login(target_acc['user'], target_acc['pass'])
             server.send_message(msg)
             
-        # 3. Update DB with History
+        # 4. Update DB
         database.update_email_status(request.emailId, "processed", sent_reply=request.replyBody)
-        database.log_event("REPLY_SENT", request.emailId, f"Replied to {request.recipient}")
+        database.log_event("REPLY_SENT", request.emailId, f"Replied to {request.recipient} from {target_acc['user']}")
         
-        return {"status": "success", "detail": "Email sent successfully"}
+        return {"status": "success", "detail": f"Email sent successfully from {target_acc['user']}"}
         
     except Exception as e:
         print(f"SMTP Error: {e}")
@@ -529,4 +624,4 @@ def post_debug_log(request: DebugLogRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8010)

@@ -5,33 +5,83 @@ from datetime import datetime
 DB_NAME = "mailguard.db"
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
-    # Create Emails Table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS emails (
-            id TEXT PRIMARY KEY,
-            from_addr TEXT,
-            subject TEXT,
-            body TEXT,
-            received_at TEXT,
-            status TEXT,
-            ai_analysis TEXT,
-            message_id TEXT,
-            thread_id TEXT,
-            sent_reply TEXT,
-            sent_at TEXT,
-            is_read INTEGER DEFAULT 0
-        )
-    ''')
     
-    # Migration: Add is_read column if it doesn't exist
-    try:
+    # Check if we need to migrate the emails table to composite primary key
+    c.execute("PRAGMA table_info(emails)")
+    e_cols = {col[1]: col for col in c.fetchall()}
+    
+    needs_recreate = False
+    if "emails" in [t[0] for t in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]:
+        # If ID is primary key but not account_owner, we need to recreate
+        id_col = e_cols.get("id")
+        if id_col and id_col[5] == 1: # pk flag is 1
+            # Check if it's a composite PK with account_owner
+            # In SQLite PRAGMA table_info, pk > 0 indicates part of PK. 
+            # If multiple columns have pk > 0, it's composite.
+            pk_cols = [name for name, info in e_cols.items() if info[5] > 0]
+            if len(pk_cols) < 2:
+                needs_recreate = True
+
+    if needs_recreate:
+        print("Migrating emails table to composite primary key...")
+        c.execute("ALTER TABLE emails RENAME TO emails_old")
+        c.execute('''
+            CREATE TABLE emails (
+                id TEXT,
+                from_addr TEXT,
+                subject TEXT,
+                body TEXT,
+                received_at TEXT,
+                status TEXT,
+                ai_analysis TEXT,
+                message_id TEXT,
+                thread_id TEXT,
+                sent_reply TEXT,
+                sent_at TEXT,
+                is_read INTEGER DEFAULT 0,
+                account_owner TEXT,
+                PRIMARY KEY (id, account_owner)
+            )
+        ''')
+        # Copy old data - note that some older records might have NULL account_owner
+        # We'll fill them with 'unknown' or the primary account if we could, 
+        # but for now let's just use what's there.
+        c.execute('''
+            INSERT OR IGNORE INTO emails (id, from_addr, subject, body, received_at, status, ai_analysis, message_id, thread_id, sent_reply, sent_at, is_read, account_owner)
+            SELECT id, from_addr, subject, body, received_at, status, ai_analysis, message_id, thread_id, sent_reply, sent_at, is_read, account_owner FROM emails_old
+        ''')
+        c.execute("DROP TABLE emails_old")
+        print("Migration complete.")
+    else:
+        # Create Emails Table if not exists
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS emails (
+                id TEXT,
+                from_addr TEXT,
+                subject TEXT,
+                body TEXT,
+                received_at TEXT,
+                status TEXT,
+                ai_analysis TEXT,
+                message_id TEXT,
+                thread_id TEXT,
+                sent_reply TEXT,
+                sent_at TEXT,
+                is_read INTEGER DEFAULT 0,
+                account_owner TEXT,
+                PRIMARY KEY (id, account_owner)
+            )
+        ''')
+    
+    # Re-check columns for other tables
+    c.execute("PRAGMA table_info(emails)")
+    e_cols_list = [col[1] for col in c.fetchall()]
+    if "is_read" not in e_cols_list:
         c.execute("ALTER TABLE emails ADD COLUMN is_read INTEGER DEFAULT 0")
-        conn.commit()
-        print("Added is_read column to emails table")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    if "account_owner" not in e_cols_list:
+        c.execute("ALTER TABLE emails ADD COLUMN account_owner TEXT")
     
     # Create Templates Table
     c.execute('''
@@ -108,29 +158,30 @@ def init_db():
     conn.close()
 
 def save_email(email_dict):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     
     msg_id = email_dict.get('message_id')
     uid = email_dict['id']
+    owner = email_dict.get('account_owner') # New field
     
-    # STABLE DEDUPLICATION: Check by Message-ID first
+    # STABLE DEDUPLICATION: Check by Message-ID and Account-Owner first
     existing = None
-    if msg_id:
-        c.execute("SELECT id, ai_analysis FROM emails WHERE message_id = ?", (msg_id,))
+    if msg_id and owner:
+        c.execute("SELECT id, ai_analysis FROM emails WHERE message_id = ? AND account_owner = ?", (msg_id, owner))
         existing = c.fetchone()
     
-    # If not found by Message-ID, try UID
-    if not existing:
-        c.execute("SELECT id, ai_analysis FROM emails WHERE id = ?", (uid,))
+    # If not found by Message-ID, try UID and Owner
+    if not existing and owner:
+        c.execute("SELECT id, ai_analysis FROM emails WHERE id = ? AND account_owner = ?", (uid, owner))
         existing = c.fetchone()
     
     analysis_json = json.dumps(email_dict.get('aiAnalysis')) if email_dict.get('aiAnalysis') else None
 
     if existing is None:
         c.execute('''
-            INSERT INTO emails (id, from_addr, subject, body, received_at, status, ai_analysis, message_id, thread_id, sent_reply, sent_at, is_read)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO emails (id, from_addr, subject, body, received_at, status, ai_analysis, message_id, thread_id, sent_reply, sent_at, is_read, account_owner)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             uid,
             email_dict['from'],
@@ -143,30 +194,30 @@ def save_email(email_dict):
             email_dict.get('thread_id'),
             email_dict.get('sent_reply'),
             email_dict.get('sent_at'),
-            email_dict.get('is_read', 0)
+            email_dict.get('is_read', 0),
+            owner
         ))
         conn.commit()
         conn.close()
         return True # Added new
     else:
         # SYNC: If the UID changed but it's the same email (Message-ID matched)
-        # We update the UID and other fields but PRESERVE analysis and status if they exist
         existing_uid = existing[0]
         if existing_uid != uid:
-            c.execute("UPDATE emails SET id = ? WHERE message_id = ?", (uid, msg_id))
+            c.execute("UPDATE emails SET id = ? WHERE message_id = ? AND account_owner = ?", (uid, msg_id, owner))
             print(f"Deduplication: Updated UID from {existing_uid} to {uid} for {msg_id}")
         
         # If we have a sent_reply/at now but didn't before, update it
         if email_dict.get('sent_reply') and not existing[1]:
-             c.execute("UPDATE emails SET sent_reply = ?, sent_at = ?, status = ? WHERE id = ?", 
-                       (email_dict['sent_reply'], email_dict['sent_at'], 'processed', uid))
+             c.execute("UPDATE emails SET sent_reply = ?, sent_at = ?, status = ? WHERE id = ? AND account_owner = ?", 
+                       (email_dict['sent_reply'], email_dict['sent_at'], 'processed', uid, owner))
         
         conn.commit()
         conn.close()
         return False # Existing
 
 def get_all_emails():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     conn.row_factory = sqlite3.Row # Allow access by column name
     c = conn.cursor()
     c.execute("SELECT * FROM emails ORDER BY received_at DESC")
@@ -186,14 +237,15 @@ def get_all_emails():
             "thread_id": row['thread_id'],
             "sentReply": row['sent_reply'],
             "sentAt": row['sent_at'],
-            "isRead": bool(row['is_read']) if 'is_read' in row.keys() else False
+            "isRead": bool(row['is_read']) if 'is_read' in row.keys() else False,
+            "accountOwner": row['account_owner'] # Added
         })
     conn.close()
     return results
 
 def mark_as_read(email_id):
     """Mark an email as read."""
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     c.execute("UPDATE emails SET is_read = 1 WHERE id = ?", (email_id,))
     conn.commit()
@@ -201,7 +253,7 @@ def mark_as_read(email_id):
 
 # --- Templates ---
 def get_templates():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM templates")
@@ -216,7 +268,7 @@ def get_templates():
     } for r in rows]
 
 def save_template(id, name, content, keywords="", attachments=[]):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO templates (id, name, content, keywords, attachments_json) VALUES (?, ?, ?, ?, ?)", 
               (id, name, content, keywords, json.dumps(attachments)))
@@ -224,7 +276,7 @@ def save_template(id, name, content, keywords="", attachments=[]):
     conn.close()
 
 def delete_template(id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     c.execute("DELETE FROM templates WHERE id = ?", (id,))
     conn.commit()
@@ -232,7 +284,7 @@ def delete_template(id):
 
 # --- Settings ---
 def get_settings():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     c.execute("SELECT * FROM settings")
     rows = c.fetchall()
@@ -240,7 +292,7 @@ def get_settings():
     return {r[0]: r[1] for r in rows}
 
 def save_setting(key, value):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit()
@@ -248,7 +300,7 @@ def save_setting(key, value):
 
 # --- Logs ---
 def get_logs(limit=50):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,))
@@ -257,7 +309,7 @@ def get_logs(limit=50):
     return [{"id": r["id"], "timestamp": r["timestamp"], "action": r["action"], "emailId": r["email_id"], "detail": r["detail"]} for r in rows]
 
 def log_event(action, email_id, detail):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c.execute("INSERT INTO logs (timestamp, action, email_id, detail) VALUES (?, ?, ?, ?)", (timestamp, action, email_id, detail))
@@ -268,7 +320,7 @@ def log_event(action, email_id, detail):
     conn.close()
 
 def update_email_status(email_id, status, analysis=None, sent_reply=None):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     sent_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if sent_reply else None
     
@@ -287,7 +339,7 @@ def update_email_status(email_id, status, analysis=None, sent_reply=None):
 
 # --- Tasks ---
 def get_tasks():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM tasks ORDER BY created_at DESC")
@@ -305,7 +357,7 @@ def get_tasks():
     } for r in rows]
 
 def save_task(task_dict):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c.execute('''
@@ -324,15 +376,26 @@ def save_task(task_dict):
     conn.close()
 
 def update_task_status(task_id, status):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     c.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
     conn.commit()
     conn.close()
 
 def delete_task(task_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
     c.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
+
+def clear_all_emails():
+    """Wipe all email and log data but keep templates and settings."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    c.execute("DELETE FROM emails")
+    c.execute("DELETE FROM logs")
+    c.execute("DELETE FROM tasks")
+    conn.commit()
+    conn.close()
+    return True

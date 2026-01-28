@@ -23,7 +23,8 @@ import {
   Rocket,
   Paperclip,
   History,
-  List
+  List,
+  BookOpen
 } from 'lucide-react';
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -114,17 +115,53 @@ export default function App() {
   const [fetchMode, setFetchMode] = useState('all'); // 'all' or 'unread'
   const [kbStatus, setKbStatus] = useState({ active: false, doc_count: 0 });
   const [tasks, setTasks] = useState([]);
+  const [viewingProcessed, setViewingProcessed] = useState(null);
+  const [activeAccount, setActiveAccount] = useState('all'); // 'all' or specific account email
+  const [dashboardFilter, setDashboardFilter] = useState('all'); // 'all', 'pending', 'resolved', 'replied'
 
   const safeEmails = Array.isArray(emails) ? emails : [];
-  const statPending = safeEmails.filter(e => e.status === 'pending_review' || e.status === 'unread').length;
-  const statProcessed = safeEmails.filter(e => e.status === 'processed').length;
-  const statTotal = safeEmails.length;
+
+  // Calculate unique accounts from emails
+  const accountsList = ['all', ...new Set(safeEmails.map(e => e.accountOwner).filter(Boolean))];
+
+  // Filter emails based on selected account AND dashboard filter
+  const filteredEmails = safeEmails.filter(e => {
+    // 1. Account Filter
+    const matchAccount = activeAccount === 'all' || e.accountOwner === activeAccount;
+    if (!matchAccount) return false;
+
+    // 2. Status Filter
+    if (dashboardFilter === 'all') return true;
+    if (dashboardFilter === 'pending') return e.status !== 'processed';
+    if (dashboardFilter === 'resolved') return e.status === 'processed' && !e.sentReply;
+    if (dashboardFilter === 'replied') return e.status === 'processed' && !!e.sentReply;
+    return true;
+  });
+
+  // Grouping Function
+  const groupEmailsByDate = (emailsToGroup) => {
+    const groups = {};
+    emailsToGroup.forEach(e => {
+      const dateStr = e.receivedAt ? e.receivedAt.split(' ')[0] : '未知日期';
+      if (!groups[dateStr]) groups[dateStr] = [];
+      groups[dateStr].push(e);
+    });
+    // Sort keys (dates) descending
+    return Object.keys(groups).sort().reverse().map(date => ({
+      date,
+      emails: groups[date]
+    }));
+  };
+
+  const statPending = filteredEmails.filter(e => e.status === 'pending_review' || e.status === 'unread').length;
+  const statProcessed = filteredEmails.filter(e => e.status === 'processed').length;
+  const statTotal = filteredEmails.length;
 
   const fetchEmails = async () => {
     setIsLoadingEmails(true);
     try {
-      await fetch(`http://localhost:8000/poll-emails?fetch_mode=${fetchMode}`);
-      const res = await fetch('http://localhost:8000/emails');
+      await fetch(`http://localhost:8010/poll-emails?fetch_mode=${fetchMode}`);
+      const res = await fetch('http://localhost:8010/emails');
       const data = await res.json();
       if (Array.isArray(data)) setEmails(data);
     } catch (error) {
@@ -136,19 +173,19 @@ export default function App() {
 
   const loadInitialData = async () => {
     try {
-      const tRes = await fetch('http://localhost:8000/templates');
+      const tRes = await fetch('http://localhost:8010/templates');
       const tData = await tRes.json();
       if (Array.isArray(tData)) setTemplates(tData);
 
-      const sRes = await fetch('http://localhost:8000/settings');
+      const sRes = await fetch('http://localhost:8010/settings');
       const sData = await sRes.json();
       if (sData) setConfig(prev => ({ ...prev, ...sData }));
 
-      const lRes = await fetch('http://localhost:8000/logs');
+      const lRes = await fetch('http://localhost:8010/logs');
       const lData = await lRes.json();
       if (Array.isArray(lData)) setLogs(lData);
 
-      const tskRes = await fetch('http://localhost:8000/tasks');
+      const tskRes = await fetch('http://localhost:8010/tasks');
       const tskData = await tskRes.json();
       if (Array.isArray(tskData)) setTasks(tskData);
     } catch (err) {
@@ -158,7 +195,7 @@ export default function App() {
 
   const fetchTasks = async () => {
     try {
-      const res = await fetch('http://localhost:8000/tasks');
+      const res = await fetch('http://localhost:8010/tasks');
       const data = await res.json();
       if (Array.isArray(data)) setTasks(data);
     } catch (e) { console.error("Fetch tasks error", e); }
@@ -166,7 +203,7 @@ export default function App() {
 
   const fetchKbStatus = async () => {
     try {
-      const res = await fetch('http://localhost:8000/kb-status');
+      const res = await fetch('http://localhost:8010/kb-status');
       const data = await res.json();
       setKbStatus(data);
     } catch (e) { console.error("KB status error", e); }
@@ -184,7 +221,7 @@ export default function App() {
     // Mark as read if not already read
     if (!email.isRead) {
       try {
-        await fetch(`http://localhost:8000/emails/${email.id}/mark-read`, { method: 'POST' });
+        await fetch(`http://localhost:8010/emails/${email.id}/mark-read`, { method: 'POST' });
         // Update local state
         setEmails(prev => prev.map(e => e.id === email.id ? { ...e, isRead: true } : e));
       } catch (error) {
@@ -196,7 +233,7 @@ export default function App() {
   const handleSaveConfig = async () => {
     try {
       await Promise.all(Object.entries(config).map(([k, v]) =>
-        fetch('http://localhost:8000/settings', {
+        fetch('http://localhost:8010/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ key: k, value: String(v) })
@@ -215,7 +252,7 @@ export default function App() {
     if (!content) return;
     const newTmpl = { id: `tmpl_${Date.now()}`, name, content };
     try {
-      await fetch('http://localhost:8000/templates', {
+      await fetch('http://localhost:8010/templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newTmpl)
@@ -227,56 +264,54 @@ export default function App() {
   const handleDeleteTemplate = async (id) => {
     if (!confirm("确定删除?")) return;
     try {
-      await fetch(`http://localhost:8000/templates/${id}`, { method: 'DELETE' });
+      await fetch(`http://localhost:8010/templates/${id}`, { method: 'DELETE' });
       setTemplates(prev => prev.filter(t => t.id !== id));
     } catch (e) { alert("删除失败"); }
   };
 
-  const askAI = async (prompt) => {
-    // Route to the correct AI provider based on selection
-    const res = await fetch('http://localhost:8000/analyze-email', {
+  const askAI = async (body, instruction = null) => {
+    const res = await fetch('http://localhost:8010/analyze-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         emailId: selectedEmail?.id || "temp",
         emailSubject: selectedEmail?.subject || "Direct Query",
-        emailBody: prompt,
-        provider: aiProvider  // Pass the selected provider
+        emailBody: body,
+        provider: aiProvider,
+        instruction: instruction
       })
     });
     const data = await res.json();
-    return data.analysis || "";
+    return data;
   };
 
   const handleAiGenerateReply = async (tone) => {
     if (!selectedEmail) return;
     setIsAiGenerating(true);
-    let toneInstruction = tone === 'antigravity' ? "Anti-gravity (幽默/创意)" : tone === 'professional' ? "正式" : "亲切";
-    const prompt = `You are a professional customer service assistant. Please reply to this email.
-Requirements:
-1. **Language Matching**: You MUST detect the language of the original email and reply in the EXACT SAME language. If the email is in English, reply in English. If it is in Chinese, reply in Chinese. DO NOT translate to Chinese if the original is English.
-2. **Tone**: ${toneInstruction}
-3. **Drafting**: Provide a professional and accurate response.
-4. **Signature**: ${config.signature}
+    let toneInstruction = `Please generate a reply in a ${tone === 'antigravity' ? 'creative and humorous' : tone === 'professional' ? 'formal and professional' : 'warm and empathetic'} tone. Signature to use: ${config.signature}`;
 
-Original Email Info:
-To: ${selectedEmail.from}
-Subject: ${selectedEmail.subject}
-Content: ${selectedEmail.body}`;
-    const result = await askAI(prompt);
+    const data = await askAI(selectedEmail.body, toneInstruction);
+    const result = data.analysis || "";
+
     const updated = {
       ...selectedEmail,
-      aiAnalysis: { ...(selectedEmail.aiAnalysis || {}), draftReply: result }
+      aiAnalysis: {
+        ...(selectedEmail.aiAnalysis || {}),
+        draftReply: result,
+        sourcesUsed: Array.isArray(data.sourcesUsed) ? data.sourcesUsed : [],
+        ragSources: Array.isArray(data.ragSources) ? data.ragSources : []
+      }
     };
     setSelectedEmail(updated);
-    setEmails(emails.map(e => e.id === updated.id ? updated : e));
+    setEmails(prev => prev.map(e => e.id === updated.id ? updated : e));
     setIsAiGenerating(false);
   };
 
   const handleAiDeepAnalyze = async () => {
     if (!selectedEmail) return;
     setIsAiAnalyzing(true);
-    const result = await askAI(`深层分析邮件: ${selectedEmail.body}`);
+    const data = await askAI(selectedEmail.body, "Please perform a deep strategic analysis of this email. Identify hidden intents, potential issues, and suggest detailed business actions.");
+    const result = data.analysis || "";
     setLogs(prev => [{ id: Date.now(), timestamp: new Date().toLocaleString(), action: `AI_INSIGHT_(${aiProvider.toUpperCase()})`, emailId: selectedEmail.id, detail: result }, ...prev]);
     setIsAiAnalyzing(false);
   };
@@ -287,7 +322,7 @@ Content: ${selectedEmail.body}`;
     setIsAiGenerating(true);
     const results = await Promise.all(toProcess.map(async (e) => {
       try {
-        const res = await fetch('http://localhost:8000/analyze-email', {
+        const res = await fetch('http://localhost:8010/analyze-email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ emailId: e.id, emailSubject: e.subject, emailBody: e.body, provider: aiProvider })
@@ -306,16 +341,26 @@ Content: ${selectedEmail.body}`;
             matchedTemplate: data.matchedTemplate,
             confidence: confidence,
             category: data.category || "Information",
-            intent: data.intent || ""
+            intent: data.intent || "",
+            requiresReply: data.requiresReply ?? true,
+            sourcesUsed: data.sourcesUsed || [],
+            ragSources: data.ragSources || []
           }
         };
 
-        // Logic check for Auto-Reply
+        // Logic check for Auto-Reply or Auto-Ignore
         if (config.autoReplyMode) {
-          if (isAutoMatch || (confidence >= config.autoReplyThreshold)) {
+          // Case 1: Doesn't require a reply (Newsletters, etc.)
+          if (data.requiresReply === false && confidence >= config.autoReplyThreshold) {
+            await fetch(`http://localhost:8010/emails/${e.id}/resolve`, { method: 'POST' });
+            return { ...updatedEmail, status: 'processed' };
+          }
+
+          // Case 2: Requires reply and meets confidence/template match
+          if (data.requiresReply !== false && (isAutoMatch || (confidence >= config.autoReplyThreshold))) {
             // Auto-send
             const actualAttachments = isAutoMatch ? (data.matchedTemplate.attachments || []) : [];
-            fetch('http://localhost:8000/send-reply', {
+            fetch('http://localhost:8010/send-reply', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -335,10 +380,9 @@ Content: ${selectedEmail.body}`;
             };
           }
         }
-
         return updatedEmail;
-      } catch (e) {
-        console.error("Processing error", e);
+      } catch (err) {
+        console.error("Processing error", err);
         return e;
       }
     }));
@@ -346,10 +390,11 @@ Content: ${selectedEmail.body}`;
     setIsAiGenerating(false);
   };
 
+
   const handleSendReply = async (emailId) => {
     if (!selectedEmail) return;
     try {
-      await fetch('http://localhost:8000/send-reply', {
+      await fetch('http://localhost:8010/send-reply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -366,11 +411,21 @@ Content: ${selectedEmail.body}`;
     } catch (e) { alert("发送失败"); }
   };
 
+  const handleMarkResolved = async (emailId) => {
+    if (!selectedEmail) return;
+    if (!confirm("确定将此邮件标记为已处理（无需回复）？")) return;
+    try {
+      await fetch(`http://localhost:8010/emails/${emailId}/resolve`, { method: 'POST' });
+      setEmails(emails.map(e => e.id === emailId ? { ...e, status: 'processed' } : e));
+      setSelectedEmail(null);
+    } catch (e) { alert("操作失败: " + e.message); }
+  };
+
   const simulateNewEmail = () => fetchEmails();
 
   const handleCreateTask = async (task) => {
     try {
-      await fetch('http://localhost:8000/tasks', {
+      await fetch('http://localhost:8010/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(task)
@@ -382,7 +437,7 @@ Content: ${selectedEmail.body}`;
   const handleToggleTask = async (taskId, currentStatus) => {
     const newStatus = currentStatus === 'completed' ? 'pending' : 'completed';
     try {
-      await fetch(`http://localhost:8000/tasks/${taskId}`, {
+      await fetch(`http://localhost:8010/tasks/${taskId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
@@ -394,25 +449,62 @@ Content: ${selectedEmail.body}`;
   const handleDeleteTask = async (taskId) => {
     if (!confirm("确定删除任务?")) return;
     try {
-      await fetch(`http://localhost:8000/tasks/${taskId}`, { method: 'DELETE' });
+      await fetch(`http://localhost:8010/tasks/${taskId}`, { method: 'DELETE' });
       fetchTasks();
     } catch (e) { alert("删除失败"); }
   };
 
   const navigateToEmail = (emailId) => {
-    const email = emails.find(e => e.id === emailId);
+    const email = safeEmails.find(e => e.id === emailId);
     if (email) {
-      setSelectedEmail(email);
-      setActiveTab('review');
+      // 1. Ensure the correct account context is selected
+      if (email.accountOwner && activeAccount !== 'all') {
+        setActiveAccount(email.accountOwner);
+      }
+
+      // 2. Handle based on status
+      if (email.status === 'processed') {
+        // If already processed, show the detail modal instead of jumping to review
+        setViewingProcessed(email);
+        setActiveTab('dashboard'); // Go to list view where it originated
+      } else {
+        // If pending, jump to review tab and select it
+        setSelectedEmail(email);
+        setActiveTab('review');
+
+        // Use timeout to ensure DOM is ready then scroll if needed
+        setTimeout(() => {
+          const el = document.getElementById(`review-item-${email.id}`);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 100);
+      }
     } else {
-      alert("关联邮件未找到 (可能已超过24小时同步范围)");
+      alert("关联邮件未找到 (可能已超过24小时同步范围或被重置)");
+    }
+  };
+
+  const handleResetDatabase = async () => {
+    if (!confirm("⚠️ 危险操作：这将清除所有邮件、日志和任务记录！模版和设置将保留。确定要重新初始化数据库吗？")) return;
+    try {
+      const res = await fetch('http://localhost:8010/reset-emails', { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'success') {
+        alert("数据库已重置！");
+        setEmails([]);
+        setLogs([]);
+        setTasks([]);
+      } else {
+        alert("重置失败: " + data.message);
+      }
+    } catch (e) {
+      alert("重置失败，请检查后端。");
     }
   };
 
   const handleRebuildKB = async () => {
     if (!confirm("重建 Knowledge Base 会花费一些时间,确定继续?")) return;
     try {
-      const res = await fetch('http://localhost:8000/rebuild-kb', { method: 'POST' });
+      const res = await fetch('http://localhost:8010/rebuild-kb', { method: 'POST' });
       const data = await res.json();
       if (data.status === 'success') {
         alert(`Knowledge Base 重建成功!\n文档数: ${data.doc_count}\n分块数: ${data.chunks}`);
@@ -467,6 +559,30 @@ Content: ${selectedEmail.body}`;
               <option value="openai">🤖 OpenAI GPT-4</option>
               <option value="groq">⚡ Groq (Llama)</option>
             </select>
+
+            {/* Account Switcher */}
+            <div className="flex bg-slate-100/80 p-1 rounded-xl ml-2 border border-slate-200/50 backdrop-blur-sm shadow-inner">
+              {accountsList.map(acc => (
+                <button
+                  key={acc}
+                  onClick={() => setActiveAccount(acc)}
+                  className={`px-3 py-1.5 text-[10px] font-bold rounded-lg transition-all duration-300 ${activeAccount === acc
+                    ? 'bg-white text-blue-600 shadow-md ring-1 ring-black/5 scale-105 transform'
+                    : 'text-slate-400 hover:text-slate-600 hover:bg-white/50'
+                    }`}
+                >
+                  <div className="flex items-center gap-2">
+                    {acc === 'all' ? <Activity size={12} /> : <Mail size={12} />}
+                    <span>{acc === 'all' ? '所有账户' : acc.split('@')[0]}</span>
+                    {acc !== 'all' && (
+                      <span className="px-1.5 py-0.5 bg-blue-50 text-blue-500 rounded-full text-[8px] font-black">
+                        {safeEmails.filter(e => e.accountOwner === acc && (e.status === 'unread' || e.status === 'pending_review')).length}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
             <div className={`ml-2 px-3 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer hover:bg-green-100 ${kbStatus.active ? 'bg-green-50 text-green-600 border border-green-100' : 'bg-gray-100 text-gray-400 border border-gray-200'}`} onClick={handleRebuildKB} title="点击重建 Knowledge Base">
               <div className={`w-1.5 h-1.5 rounded-full ${kbStatus.active ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
               Knowledge Base: {kbStatus.active ? `${kbStatus.doc_count} Docs` : 'Click to Build'}
@@ -488,11 +604,168 @@ Content: ${selectedEmail.body}`;
           )}
 
           {activeTab === 'dashboard' && (
-            <div className="bg-white rounded-xl border">
-              <div className="p-4 border-b font-bold">最近邮件</div>
-              <div className="divide-y">
-                {safeEmails.map(e => <EmailRow key={e.id} email={e} onClick={() => { handleSelectEmail(e); setActiveTab('review'); }} />)}
+            <div className="bg-white rounded-xl border relative">
+              <div className="p-4 border-b font-bold flex justify-between items-center bg-gray-50/50">
+                <div className="flex items-center gap-4">
+                  <span className="text-sm">最近邮件</span>
+                  <div className="flex bg-gray-200/50 p-1 rounded-lg">
+                    {[
+                      { id: 'all', label: '全部', color: 'bg-gray-400' },
+                      { id: 'pending', label: '待处理', color: 'bg-blue-500' },
+                      { id: 'resolved', label: '已解决', color: 'bg-green-600' },
+                      { id: 'replied', label: '已回复', color: 'bg-indigo-600' }
+                    ].map(f => (
+                      <button
+                        key={f.id}
+                        onClick={() => setDashboardFilter(f.id)}
+                        className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${dashboardFilter === f.id
+                          ? 'bg-white text-blue-600 shadow-sm'
+                          : 'text-gray-400 hover:text-gray-600'
+                          }`}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <div className={`w-1.5 h-1.5 rounded-full ${f.color}`} />
+                          {f.label}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                    <div className="w-2 h-2 rounded-full bg-blue-500" /> 待处理
+                  </div>
+                  <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                    <div className="w-2 h-2 rounded-full bg-green-500" /> 已处理
+                  </div>
+                </div>
               </div>
+              <div className="divide-y max-h-[70vh] overflow-auto bg-slate-50/30">
+                {filteredEmails.length === 0 ? (
+                  <div className="p-12 text-center text-gray-400">暂无符合条件的邮件记录</div>
+                ) : (
+                  groupEmailsByDate(filteredEmails).map(group => (
+                    <div key={group.date}>
+                      <div className="bg-slate-100/80 px-4 py-1.5 text-[10px] font-black text-slate-500 sticky top-0 z-10 backdrop-blur-sm border-y border-slate-200/50 flex items-center justify-between">
+                        <span>{group.date}</span>
+                        <span className="bg-slate-200 px-1.5 rounded-full">{group.emails.length}</span>
+                      </div>
+                      <div className="bg-white">
+                        {group.emails.map(e => (
+                          <EmailRow
+                            key={e.id}
+                            email={e}
+                            onClick={() => {
+                              if (e.status === 'processed') {
+                                setViewingProcessed(e);
+                              } else {
+                                handleSelectEmail(e);
+                                setActiveTab('review');
+                              }
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Processed Detail Modal */}
+              {viewingProcessed && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 md:p-8 animate-in fade-in duration-200">
+                  <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-200 ring-1 ring-black/5">
+                    <div className="p-6 border-b flex justify-between items-center bg-gray-50">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <CheckCircle className="text-green-500" size={18} />
+                          <h3 className="font-bold text-lg">处理详情</h3>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          邮件 ID: {viewingProcessed.id}
+                          {viewingProcessed.accountOwner && <span className="ml-2 px-1.5 py-0.5 bg-slate-200 rounded text-slate-600">账户: {viewingProcessed.accountOwner}</span>}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setViewingProcessed(null)}
+                        className="p-2 hover:bg-gray-200 rounded-full transition-colors"
+                      >
+                        <Trash2 className="text-gray-400 rotate-45" size={24} />
+                      </button>
+                    </div>
+
+                    <div className="flex-1 overflow-auto p-6 space-y-6">
+                      {/* Email Contents */}
+                      <section>
+                        <div className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">
+                          <Mail size={14} /> 原始邮件
+                        </div>
+                        <div className="bg-slate-50 border rounded-xl p-5">
+                          <div className="font-bold text-slate-800 mb-2">{viewingProcessed.subject}</div>
+                          <div className="text-xs text-slate-400 mb-4 pb-4 border-b border-slate-200">
+                            From: {viewingProcessed.from} • {viewingProcessed.receivedAt}
+                          </div>
+                          <div className="text-sm text-slate-600 whitespace-pre-wrap leading-relaxed">
+                            {viewingProcessed.body}
+                          </div>
+                        </div>
+                      </section>
+
+                      {/* AI Result */}
+                      {viewingProcessed.aiAnalysis && (
+                        <section className="grid md:grid-cols-2 gap-4">
+                          <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
+                            <div className="text-[10px] font-bold text-blue-400 uppercase mb-2">AI 分析结果</div>
+                            <div className="flex items-center gap-3 mb-2">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${getCategoryStyles(viewingProcessed.aiAnalysis.category)}`}>
+                                {viewingProcessed.aiAnalysis.category}
+                              </span>
+                              <span className="text-[10px] font-bold text-blue-600">置信度: {Math.round((viewingProcessed.aiAnalysis.confidence || 0) * 100)}%</span>
+                            </div>
+                            <p className="text-xs text-blue-800 italic">“{viewingProcessed.aiAnalysis.intent}”</p>
+                          </div>
+                          <div className="bg-purple-50 border border-purple-100 rounded-xl p-4">
+                            <div className="text-[10px] font-bold text-purple-400 uppercase mb-2">回复策略</div>
+                            <div className="text-xs font-bold text-purple-800 flex items-center gap-1.5">
+                              {viewingProcessed.aiAnalysis.requiresReply === false ? (
+                                <><ShieldAlert size={12} /> 判定为无需回复邮件</>
+                              ) : (
+                                <><Bot size={12} /> AI 已建议/执行回复</>
+                              )}
+                            </div>
+                          </div>
+                        </section>
+                      )}
+
+                      {/* Reply Content */}
+                      {viewingProcessed.sentReply && (
+                        <section>
+                          <div className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">
+                            <Send size={14} className="text-green-500" /> 已发送的回复
+                          </div>
+                          <div className="bg-green-50 border border-green-100 rounded-xl p-5">
+                            <div className="text-[10px] text-green-500 font-bold mb-2">
+                              发送时间: {viewingProcessed.sentAt}
+                            </div>
+                            <div className="text-sm text-green-900 whitespace-pre-wrap font-medium">
+                              {viewingProcessed.sentReply}
+                            </div>
+                          </div>
+                        </section>
+                      )}
+                    </div>
+
+                    <div className="p-6 border-t bg-gray-50 flex justify-end">
+                      <button
+                        onClick={() => setViewingProcessed(null)}
+                        className="px-6 py-2 bg-slate-800 text-white rounded-lg font-bold hover:bg-slate-900 transition-all shadow-lg"
+                      >
+                        完成阅读
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -525,8 +798,8 @@ Content: ${selectedEmail.body}`;
                 </div>
                 <div className="p-4 bg-gray-50 border-b font-bold">审核队列 ({statPending})</div>
                 <div className="flex-1 overflow-auto divide-y">
-                  {safeEmails.filter(e => e.status !== 'processed').map(e => (
-                    <div key={e.id} onClick={() => handleSelectEmail(e)} className={`p-4 cursor-pointer hover:bg-blue-50 transition-all ${selectedEmail?.id === e.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''} ${e.aiAnalysis?.isUrgent ? 'border-red-400 border-l-4 bg-red-50' : ''} ${!e.isRead ? 'bg-blue-50/20' : ''}`}>
+                  {filteredEmails.filter(e => e.status !== 'processed').map(e => (
+                    <div key={e.id} id={`review-item-${e.id}`} onClick={() => handleSelectEmail(e)} className={`p-4 cursor-pointer hover:bg-blue-50 transition-all ${selectedEmail?.id === e.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''} ${e.aiAnalysis?.isUrgent ? 'border-red-400 border-l-4 bg-red-50' : ''} ${!e.isRead ? 'bg-blue-50/20' : ''}`}>
                       <div className="flex justify-between items-start mb-1 gap-2">
                         <div className="flex items-center gap-2 flex-1">
                           {!e.isRead && <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse flex-shrink-0" />}
@@ -540,8 +813,12 @@ Content: ${selectedEmail.body}`;
                             {e.aiAnalysis.category}
                           </span>
                         )}
-                        <div className="text-[10px] text-gray-500 truncate flex-1">{e.from}</div>
+                        <div className="text-[10px] text-slate-500 font-mono flex-1">{e.from}</div>
+                        <div className="text-[9px] text-slate-400 font-medium whitespace-nowrap">{e.receivedAt}</div>
                       </div>
+                      {e.accountOwner && (
+                        <div className="mt-1 text-[9px] text-blue-400 font-mono italic">@{e.accountOwner.split('@')[0]}</div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -570,7 +847,7 @@ Content: ${selectedEmail.body}`;
                                 setSelectedEmail(updated);
                                 setEmails(prev => prev.map(item => item.id === updated.id ? updated : item));
                                 // Sync to DB
-                                fetch('http://localhost:8000/analyze-email', {
+                                fetch('http://localhost:8010/analyze-email', {
                                   method: 'POST',
                                   headers: { 'Content-Type': 'application/json' },
                                   body: JSON.stringify({ emailId: updated.id, ...updated.aiAnalysis, updateOnly: true })
@@ -603,6 +880,7 @@ Content: ${selectedEmail.body}`;
                           <List size={12} /> 转为任务
                         </button>
                         <button onClick={handleAiDeepAnalyze} className="text-xs text-purple-600 border border-purple-200 px-2 py-1 rounded hover:bg-purple-50">AI 分析</button>
+                        <button onClick={() => handleMarkResolved(selectedEmail.id)} className="text-xs text-green-600 border border-green-200 px-2 py-1 rounded hover:bg-green-50">标记为已解决</button>
                       </div>
                     </div>
                     <div className="flex-1 overflow-auto p-6 bg-gray-50 flex flex-col gap-4">
@@ -680,8 +958,27 @@ Content: ${selectedEmail.body}`;
                         </label>
                       </div>
 
+                      {/* Knowledge Base Sources - Enhanced Safety */}
+                      {selectedEmail?.aiAnalysis && (selectedEmail.aiAnalysis.sourcesUsed?.length > 0 || selectedEmail.aiAnalysis.ragSources?.length > 0) && (
+                        <div className="mb-4 px-4 py-2 bg-blue-50/50 border border-blue-100 rounded-lg animate-in slide-in-from-top-2 duration-300">
+                          <div className="flex items-center gap-1.5 text-[9px] font-black text-blue-600 uppercase tracking-widest mb-2">
+                            <BookOpen size={12} strokeWidth={3} /> {selectedEmail.aiAnalysis.sourcesUsed?.length > 0 ? "参考知识库文档" : "相关参考资料 (RAG命中)"}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(selectedEmail.aiAnalysis.sourcesUsed?.length > 0
+                              ? selectedEmail.aiAnalysis.sourcesUsed
+                              : (selectedEmail.aiAnalysis.ragSources || [])
+                            ).map((src, idx) => (
+                              <span key={idx} className="bg-white border border-blue-200 text-blue-700 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm flex items-center gap-1.5 hover:bg-blue-50 transition-colors cursor-default">
+                                <FileText size={10} className="text-blue-400" /> {src}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       <textarea
-                        className="w-full h-32 p-3 border rounded text-sm mb-4 bg-white"
+                        className="w-full h-32 p-3 border rounded text-sm mb-4 bg-white shadow-inner focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all"
                         placeholder="在此输入您的回复..."
                         value={selectedEmail.aiAnalysis?.draftReply || ""}
                         onChange={(e) => setSelectedEmail({ ...selectedEmail, aiAnalysis: { ...selectedEmail.aiAnalysis, draftReply: e.target.value } })}
@@ -803,7 +1100,7 @@ Content: ${selectedEmail.body}`;
                       onChange={(e) => {
                         const updated = templates.map(temp => temp.id === t.id ? { ...temp, keywords: e.target.value } : temp);
                         setTemplates(updated);
-                        fetch('http://localhost:8000/templates', {
+                        fetch('http://localhost:8010/templates', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ ...t, keywords: e.target.value })
@@ -821,7 +1118,7 @@ Content: ${selectedEmail.body}`;
                             onClick={() => {
                               const updated = templates.map(temp => temp.id === t.id ? { ...temp, attachments: t.attachments.filter((_, i) => i !== idx) } : temp);
                               setTemplates(updated);
-                              fetch('http://localhost:8000/templates', {
+                              fetch('http://localhost:8010/templates', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify(updated.find(item => item.id === t.id))
@@ -846,7 +1143,7 @@ Content: ${selectedEmail.body}`;
                               const newAttach = { name: f.name, content: re.target.result };
                               const updated = templates.map(temp => temp.id === t.id ? { ...temp, attachments: [...(t.attachments || []), newAttach] } : temp);
                               setTemplates(updated);
-                              fetch('http://localhost:8000/templates', {
+                              fetch('http://localhost:8010/templates', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify(updated.find(item => item.id === t.id))
@@ -911,10 +1208,17 @@ Content: ${selectedEmail.body}`;
                     onChange={e => setConfig({ ...config, signature: e.target.value })}
                   />
                 </div>
-                <div className="pt-6 border-t border-gray-100">
+                <div className="pt-6 border-t border-gray-100 flex justify-between items-center">
                   <button onClick={handleSaveConfig} className="bg-blue-600 text-white px-8 py-2.5 rounded-lg hover:bg-blue-700 text-sm font-bold shadow-md transition-colors flex items-center gap-2">
                     <Save size={18} /> 保存配置
                   </button>
+
+                  <div className="flex flex-col items-end">
+                    <span className="text-[10px] text-red-400 font-bold uppercase mb-1 tracking-wider">Danger Zone</span>
+                    <button onClick={handleResetDatabase} className="text-red-500 hover:text-red-700 text-[10px] font-bold border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-all flex items-center gap-1.5">
+                      <Trash2 size={12} /> 初始化并重置邮件数据库
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -957,9 +1261,21 @@ function EmailRow({ email, onClick }) {
   const isUrgent = email.aiAnalysis?.isUrgent;
   const category = email.aiAnalysis?.category || (email.aiAnalysis ? "Information" : null);
   const isUnread = !email.isRead;
+  const isProcessed = email.status === 'processed';
+  const isPending = !isProcessed;
+
+  // Choose border and background colors based on status
+  let statusClasses = 'border-slate-100';
+  if (isUrgent) {
+    statusClasses = 'border-red-500 bg-red-50/30';
+  } else if (isProcessed) {
+    statusClasses = 'border-green-500 bg-white opacity-80';
+  } else if (isPending) {
+    statusClasses = 'border-blue-500 bg-blue-50/5';
+  }
 
   return (
-    <div onClick={onClick} className={`p-4 hover:bg-gray-50 cursor-pointer flex justify-between items-center border-l-4 transition-all ${isUrgent ? 'bg-red-50/50 border-red-500' : 'border-gray-100 hover:border-blue-500'} ${isUnread ? 'bg-blue-50/30' : ''}`}>
+    <div onClick={onClick} className={`p-4 hover:bg-slate-50 cursor-pointer flex justify-between items-center border-l-4 transition-all shadow-sm mb-2 rounded-r-lg ${statusClasses}`}>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 mb-1">
           {isUnread && <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />}
@@ -975,10 +1291,16 @@ function EmailRow({ email, onClick }) {
               {category}
             </span>
           )}
-          <div className="text-xs text-gray-400 truncate">{email.from}</div>
+          <div className="text-xs text-slate-500 font-medium truncate">{email.from}</div>
+          {email.accountOwner && (
+            <span className="text-[9px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+              @{email.accountOwner.split('@')[0]}
+            </span>
+          )}
+          <div className="text-[9px] text-slate-400 font-mono ml-auto">{email.receivedAt}</div>
         </div>
       </div>
-      <div className="text-[10px] text-gray-300 ml-4 font-mono">{email.receivedAt}</div>
+      <div className="text-[10px] text-slate-400 ml-4 font-mono font-bold">{email.receivedAt?.split(' ')[1]}</div>
     </div>
   );
 }

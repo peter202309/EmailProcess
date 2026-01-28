@@ -16,26 +16,25 @@ class RAGService:
 
     def _get_embeddings(self):
         """Auto-detect and return the best available embedding provider."""
-        # Priority: OpenAI > Gemini (DeepSeek doesn't provide embedding API)
         openai_key = os.getenv("OPENAI_API_KEY")
         gemini_key = os.getenv("VITE_GEMINI_API_KEY")
         
         if openai_key and openai_key.startswith("sk-"):
-            print("Using OpenAI for embeddings (high quality)")
+            print("Using OpenAI for embeddings (User Updated Key)")
             from langchain_openai import OpenAIEmbeddings
             return OpenAIEmbeddings(
                 model="text-embedding-3-small",
                 openai_api_key=openai_key
             )
         elif gemini_key:
-            print("Using Gemini for embeddings (default)")
             from langchain_google_genai import GoogleGenerativeAIEmbeddings
             return GoogleGenerativeAIEmbeddings(
                 model="models/text-embedding-004",
-                google_api_key=gemini_key
+                google_api_key=gemini_key,
+                task_type="retrieval_query"
             )
         else:
-            raise Exception("No embedding API key found. Please configure OPENAI_API_KEY or VITE_GEMINI_API_KEY in .env")
+            raise Exception("No embedding API key found.")
 
     def load_index(self):
         if self.store_type == "openai":
@@ -79,24 +78,30 @@ class RAGService:
             self.store_type = "faiss"
             self._load_faiss_store()
 
-    def search(self, query: str, k: int = 3) -> str:
+    def search(self, query: str, k: int = 3) -> list:
         if self.store_type == "openai" and hasattr(self, 'openai_client'):
-            return self._search_openai(query, k)
+            # Return as list for consistency
+            return [{"content": self._search_openai(query, k), "source": "OpenAI Vector Store"}]
         else:
             return self._search_faiss(query, k)
 
-    def _search_faiss(self, query: str, k: int) -> str:
-        """Search using local FAISS."""
+    def _search_faiss(self, query: str, k: int) -> list:
+        """Search using local FAISS and return content + sources."""
         if not self.vector_store:
-            return ""
+            return []
         
         try:
             results = self.vector_store.similarity_search(query, k=k)
-            context = "\n\n".join([doc.page_content for doc in results])
-            return context
+            return [
+                {
+                    "content": doc.page_content,
+                    "source": os.path.basename(doc.metadata.get("source", "Unknown"))
+                }
+                for doc in results
+            ]
         except Exception as e:
             print(f"FAISS search failed: {e}")
-            return ""
+            return []
 
     def _search_openai(self, query: str, k: int) -> str:
         """Search using OpenAI Vector Store."""

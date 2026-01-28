@@ -13,12 +13,12 @@ INDEX_PATH = "faiss_index"
 
 def get_embeddings():
     """Get embeddings using the same auto-detection logic as RAG."""
-    # Priority: OpenAI > Gemini (DeepSeek doesn't provide embedding API)
+    # Priority: OpenAI > Gemini (Extremely stable)
     openai_key = os.getenv("OPENAI_API_KEY")
     gemini_key = os.getenv("VITE_GEMINI_API_KEY")
     
     if openai_key and openai_key.startswith("sk-"):
-        print("Using OpenAI for embeddings")
+        print("Using OpenAI for embeddings (User Updated Key)")
         from langchain_openai import OpenAIEmbeddings
         return OpenAIEmbeddings(
             model="text-embedding-3-small",
@@ -29,7 +29,8 @@ def get_embeddings():
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         return GoogleGenerativeAIEmbeddings(
             model="models/text-embedding-004",
-            google_api_key=gemini_key
+            google_api_key=gemini_key,
+            task_type="retrieval_document"
         )
     else:
         raise Exception("No embedding API key found")
