@@ -85,13 +85,15 @@ class RAGService:
         else:
             return self._search_faiss(query, k)
 
-    def _search_faiss(self, query: str, k: int) -> list:
-        """Search using local FAISS and return content + sources."""
+    def _search_faiss(self, query: str, k: int = 5) -> list:
+        """Search using local FAISS with MMR for diversity."""
         if not self.vector_store:
             return []
         
         try:
-            results = self.vector_store.similarity_search(query, k=k)
+            # Using MMR (Maximal Marginal Relevance) to ensure we get a diverse set of chunks
+            # fetch_k is the number of candidates to consider before filtering for diversity
+            results = self.vector_store.max_marginal_relevance_search(query, k=k, fetch_k=20)
             return [
                 {
                     "content": doc.page_content,

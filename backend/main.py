@@ -388,6 +388,12 @@ async def analyze_email(request: ProcessingRequest):
 
     analysis_payload = await call_ai_with_fallback(prompt, request.provider)
     
+    # Enrich the payload with RAG sources before saving
+    analysis_payload["ragSources"] = list(set([r['source'] for r in rag_results])) if rag_results else []
+    # Ensure sourcesUsed is a list
+    if "sourcesUsed" not in analysis_payload:
+        analysis_payload["sourcesUsed"] = []
+    
     # PERSIST: Save analysis to DB
     database.update_email_status(request.emailId, "pending_review", analysis=analysis_payload)
 
@@ -398,7 +404,7 @@ async def analyze_email(request: ProcessingRequest):
         "category": analysis_payload.get("category", "Information"),
         "intent": analysis_payload.get("intent", ""),
         "sourcesUsed": analysis_payload.get("sourcesUsed", []),
-        "ragSources": list(set([r['source'] for r in rag_results])) if rag_results else [],
+        "ragSources": analysis_payload["ragSources"],
         "matchedTemplate": matched_template
     }
 

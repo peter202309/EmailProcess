@@ -737,6 +737,25 @@ export default function App() {
                         </section>
                       )}
 
+                      {/* RAG Sources in Modal */}
+                      {(viewingProcessed.aiAnalysis?.sourcesUsed?.length > 0 || viewingProcessed.aiAnalysis?.ragSources?.length > 0) && (
+                        <section className="bg-blue-50/30 border border-blue-100 rounded-xl p-4">
+                          <div className="flex items-center gap-1.5 text-[10px] font-black text-blue-600 uppercase tracking-widest mb-3">
+                            <BookOpen size={14} /> 知识库参考记录
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {(viewingProcessed.aiAnalysis.sourcesUsed?.length > 0
+                              ? viewingProcessed.aiAnalysis.sourcesUsed
+                              : (viewingProcessed.aiAnalysis.ragSources || [])
+                            ).map((src, idx) => (
+                              <div key={idx} className="bg-white border border-blue-200 text-blue-700 px-2.5 py-1 rounded-lg text-[10px] font-bold shadow-sm flex items-center gap-2">
+                                <FileText size={12} className="text-blue-400" /> {src}
+                              </div>
+                            ))}
+                          </div>
+                        </section>
+                      )}
+
                       {/* Reply Content */}
                       {viewingProcessed.sentReply && (
                         <section>
