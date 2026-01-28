@@ -424,11 +424,17 @@ Content: ${selectedEmail.body}`;
           </div>
         </div>
         <nav className="flex-1 p-4 space-y-2">
-          <NavItem icon={<AlertTriangle size={20} />} label="待处理" count={statPending} active={activeTab === 'review'} onClick={() => setActiveTab('review')} alert={statPending > 0} />
-          <NavItem icon={<List size={20} />} label="任务中心" count={tasks.filter(t => t.status === 'pending').length} active={activeTab === 'tasks'} onClick={() => setActiveTab('tasks')} />
-          <NavItem icon={<Mail size={20} />} label="所有邮件" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
-          <NavItem icon={<FileText size={20} />} label="模版" active={activeTab === 'templates'} onClick={() => setActiveTab('templates')} />
-          <NavItem icon={<CheckCircle size={20} />} label="日志" active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} />
+          {/* Tab Navigation - Moved to top */}
+          <div className="mb-4 pb-4 border-b border-slate-700">
+            <div className="text-xs text-slate-400 uppercase tracking-wider mb-2 px-2">导航</div>
+            <NavItem icon={<AlertTriangle size={20} />} label="待处理" count={statPending} active={activeTab === 'review'} onClick={() => setActiveTab('review')} alert={statPending > 0} />
+            <NavItem icon={<List size={20} />} label="任务中心" count={tasks.filter(t => t.status === 'pending').length} active={activeTab === 'tasks'} onClick={() => setActiveTab('tasks')} />
+            <NavItem icon={<Mail size={20} />} label="所有邮件" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
+            <NavItem icon={<FileText size={20} />} label="模版" active={activeTab === 'templates'} onClick={() => setActiveTab('templates')} />
+            <NavItem icon={<CheckCircle size={20} />} label="日志" active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} />
+          </div>
+
+          {/* Settings at bottom */}
           <NavItem icon={<Settings size={20} />} label="设置" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
         </nav>
       </div>
