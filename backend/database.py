@@ -274,8 +274,8 @@ def get_templates():
         "id": r["id"], 
         "name": r["name"], 
         "content": r["content"], 
-        "keywords": r.get("keywords") or "",
-        "attachments": json.loads(r["attachments_json"]) if r.get("attachments_json") else []
+        "keywords": r["keywords"] if r["keywords"] else "",
+        "attachments": json.loads(r["attachments_json"]) if r["attachments_json"] else []
     } for r in rows]
 
 def save_template(id, name, content, keywords="", attachments=[]):
