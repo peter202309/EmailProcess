@@ -27,7 +27,8 @@ import {
   BookOpen,
   Check,
   ExternalLink,
-  RotateCcw
+  RotateCcw,
+  Edit
 } from 'lucide-react';
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -126,6 +127,7 @@ export default function App() {
   const [previewFile, setPreviewFile] = useState(null); // {url, filename, type, storedName}
   const [isAnalyzingAtt, setIsAnalyzingAtt] = useState(false);
   const [attAnalysis, setAttAnalysis] = useState(null);
+  const [editingTemplate, setEditingTemplate] = useState(null);
 
   const safeEmails = Array.isArray(emails) ? emails : [];
 
@@ -376,6 +378,19 @@ export default function App() {
       await fetch(`http://localhost:8010/templates/${id}`, { method: 'DELETE' });
       setTemplates(prev => prev.filter(t => t.id !== id));
     } catch (e) { alert("删除失败"); }
+  };
+
+  const handleUpdateTemplate = async () => {
+    if (!editingTemplate) return;
+    try {
+      await fetch('http://localhost:8010/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingTemplate)
+      });
+      setTemplates(prev => prev.map(t => t.id === editingTemplate.id ? editingTemplate : t));
+      setEditingTemplate(null);
+    } catch (e) { alert("保存失败: " + e.message); }
   };
 
   const askAI = async (body, instruction = null) => {
@@ -1456,7 +1471,8 @@ export default function App() {
                   <div className="flex justify-between items-center mb-4">
                     <h3 className="font-bold text-gray-800 text-lg">{t.name}</h3>
                     <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => handleDeleteTemplate(t.id)} className="p-2 hover:bg-red-100 rounded-full text-red-500"><Trash2 size={16} /></button>
+                      <button onClick={() => setEditingTemplate(t)} className="p-2 hover:bg-blue-100 rounded-full text-blue-500" title="编辑名称/内容"><Edit size={16} /></button>
+                      <button onClick={() => handleDeleteTemplate(t.id)} className="p-2 hover:bg-red-100 rounded-full text-red-500" title="删除"><Trash2 size={16} /></button>
                     </div>
                   </div>
                   <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600 font-mono whitespace-pre-wrap h-32 overflow-auto border border-gray-100 mb-4">
@@ -1535,6 +1551,53 @@ export default function App() {
                 <div className="text-center">
                   <div className="mb-2 mx-auto w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-gray-400 group-hover:bg-blue-100 group-hover:text-blue-600"><MoreVertical className="rotate-90" /></div>
                   <p className="text-sm font-medium">添加新模版</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Template Edit Modal */}
+          {editingTemplate && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl animate-in zoom-in-95 duration-200">
+                <div className="p-6 border-b flex justify-between items-center bg-gray-50">
+                  <h3 className="font-bold text-lg flex items-center gap-2">
+                    <Edit size={18} className="text-blue-600" /> 编辑模版资信
+                  </h3>
+                  <button onClick={() => setEditingTemplate(null)} className="text-gray-400 hover:text-gray-600">×</button>
+                </div>
+                <div className="p-6 space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-400 uppercase mb-2">模版名称</label>
+                    <input
+                      type="text"
+                      className="w-full border border-gray-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={editingTemplate.name}
+                      onChange={e => setEditingTemplate({ ...editingTemplate, name: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-400 uppercase mb-2">模版内容 (拟采用的回复正文)</label>
+                    <textarea
+                      className="w-full h-48 border border-gray-200 rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none font-mono"
+                      value={editingTemplate.content}
+                      onChange={e => setEditingTemplate({ ...editingTemplate, content: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="p-6 border-t bg-gray-50 flex justify-end gap-3">
+                  <button
+                    onClick={() => setEditingTemplate(null)}
+                    className="px-6 py-2 text-gray-600 font-bold hover:bg-gray-100 rounded-lg"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={handleUpdateTemplate}
+                    className="px-8 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-lg shadow-blue-200"
+                  >
+                    保存修改
+                  </button>
                 </div>
               </div>
             </div>
