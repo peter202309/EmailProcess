@@ -404,12 +404,21 @@ def poll_emails(fetch_mode: str = "all"):
         pwd = acc['pass']
         try:
             with MailBox(IMAP_SERVER).login(user, pwd) as mailbox:
-                # Build search criteria based on fetch_mode
-                if fetch_mode == "unread":
-                    search_criteria = AND(date_gte=since_date, seen=False)
-                else:
-                    search_criteria = AND(date_gte=since_date)
+                # Build search criteria manually to avoid OS specific date/locale issues
+                # IMAP REQUIREMENT: DD-Mon-YYYY with English Month Names
+                months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                day = since_date.day
+                month_str = months[since_date.month - 1]
+                year = since_date.year
+                date_crit = f"{day}-{month_str}-{year}"
                 
+                # Use raw string criteria to avoid library-level date conversions
+                if fetch_mode == "unread":
+                    search_criteria = f'(SINCE "{date_crit}" UNSEEN)'
+                else:
+                    search_criteria = f'(SINCE "{date_crit}")'
+                
+                # Using string criteria directly
                 for msg in mailbox.fetch(search_criteria, reverse=True):
                     message_id = msg.headers.get('message-id', [None])[0]
                     references = msg.headers.get('references', [None])[0]
