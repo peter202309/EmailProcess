@@ -123,6 +123,7 @@ class TemplateSchema(BaseModel):
     name: str
     content: str
     keywords: Optional[str] = ""
+    attachments: Optional[List[dict]] = [] # list of {name, content}
 
 class SettingSchema(BaseModel):
     key: str
@@ -152,7 +153,7 @@ def get_templates():
 
 @app.post("/templates")
 def save_template(template: TemplateSchema):
-    database.save_template(template.id, template.name, template.content, template.keywords or "")
+    database.save_template(template.id, template.name, template.content, template.keywords or "", template.attachments)
     return {"status": "success"}
 
 @app.delete("/templates/{id}")
@@ -427,22 +428,25 @@ def poll_emails(fetch_mode: str = "all"):
         pwd = acc['pass']
         try:
             with MailBox(IMAP_SERVER).login(user, pwd) as mailbox:
-                # Build search criteria manually to avoid OS specific date/locale issues
-                # IMAP REQUIREMENT: DD-Mon-YYYY with English Month Names
-                months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-                day = since_date.day
-                month_str = months[since_date.month - 1]
-                year = since_date.year
-                date_crit = f"{day}-{month_str}-{year}"
+                # Use imap_tools AND criteria for better compatibility
+                # Fallback mechanism for robust fetching
+                try:
+                    if fetch_mode == "unread":
+                        criteria = AND(date_gte=since_date, seen=False)
+                    else:
+                        criteria = AND(date_gte=since_date)
+                    
+                    msgs = mailbox.fetch(criteria, reverse=True)
+                except Exception as e_search:
+                    print(f"Standard fetch failed for {user}: {e_search}. Trying fallback...")
+                    # Fallback: Fetch limit 20, no date filter if date parsing fails
+                    if fetch_mode == "unread":
+                        criteria = AND(seen=False)
+                    else:
+                        criteria = "ALL"
+                    msgs = mailbox.fetch(criteria, limit=20, reverse=True)
                 
-                # Use raw string criteria to avoid library-level date conversions
-                if fetch_mode == "unread":
-                    search_criteria = f'(SINCE "{date_crit}" UNSEEN)'
-                else:
-                    search_criteria = f'(SINCE "{date_crit}")'
-                
-                # Using string criteria directly
-                for msg in mailbox.fetch(search_criteria, reverse=True):
+                for msg in msgs:
                     message_id = msg.headers.get('message-id', [None])[0]
                     references = msg.headers.get('references', [None])[0]
                     in_reply_to = msg.headers.get('in-reply-to', [None])[0]
