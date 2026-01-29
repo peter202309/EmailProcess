@@ -403,16 +403,13 @@ def get_logs(limit=50):
     conn.close()
     return [{"id": r["id"], "timestamp": r["timestamp"], "action": r["action"], "emailId": r["email_id"], "detail": r["detail"]} for r in rows]
 
-def log_event(action, email_id, detail):
-    conn = sqlite3.connect(DB_NAME, timeout=30)
-    c = conn.cursor()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("INSERT INTO logs (timestamp, action, email_id, detail) VALUES (?, ?, ?, ?)", (timestamp, action, email_id, detail))
-    conn.commit()
-    conn.close()
 
-    conn.commit()
-    conn.close()
+@safe_db_operation
+def log_event(action, email_id, detail):
+    with get_db_connection() as conn:
+        c = conn.cursor()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("INSERT INTO logs (timestamp, action, email_id, detail) VALUES (?, ?, ?, ?)", (timestamp, action, email_id, detail))
 
 @safe_db_operation
 def update_email_status(email_id, status, analysis=None, sent_reply=None):
