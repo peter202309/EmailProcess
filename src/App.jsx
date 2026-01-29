@@ -237,31 +237,56 @@ export default function App() {
 
   const handleApproveDraft = async (draft) => {
     try {
-      await fetch(`http://localhost:8010/approve-draft?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
-      fetchPendingDrafts();
+      const res = await fetch(`http://localhost:8010/approve-draft?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
+      const data = await res.json();
+
+      if (data.status === 'success') {
+        alert(`✅ 邮件已成功发送！\n收件人: ${draft.from}\n主题: ${draft.subject}`);
+        fetchPendingDrafts();
+        fetchEmails(); // Refresh email list to update status
+      } else {
+        alert(`❌ 发送失败: ${data.detail || data.message || '未知错误'}`);
+      }
     } catch (err) {
       console.error("Failed to approve draft", err);
+      alert(`❌ 网络错误: ${err.message}\n\n请检查:\n1. 后端服务是否运行\n2. SMTP 配置是否正确\n3. 网络连接是否正常`);
     }
   };
 
   const handleRejectDraft = async (draft) => {
     if (!confirm("确定要拒绝这封回复草稿吗？")) return;
     try {
-      await fetch(`http://localhost:8010/reject-draft?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
-      fetchPendingDrafts();
+      const res = await fetch(`http://localhost:8010/reject-draft?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
+      const data = await res.json();
+
+      if (data.status === 'success') {
+        alert('✅ 草稿已拒绝');
+        fetchPendingDrafts();
+      } else {
+        alert(`❌ 操作失败: ${data.detail || data.message}`);
+      }
     } catch (err) {
       console.error("Failed to reject draft", err);
+      alert(`❌ 网络错误: ${err.message}`);
     }
   };
 
   const handleResetEmail = async (draft) => {
     if (!confirm("确定要重置此邮件进行重新评测吗？(这会清除当前的草稿)")) return;
     try {
-      await fetch(`http://localhost:8010/reset-email?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
-      fetchPendingDrafts();
-      fetchEmails();
+      const res = await fetch(`http://localhost:8010/reset-email?emailId=${draft.id}&accountOwner=${draft.accountOwner}`, { method: 'POST' });
+      const data = await res.json();
+
+      if (data.status === 'success') {
+        alert('✅ 邮件已重置，可以重新处理');
+        fetchPendingDrafts();
+        fetchEmails();
+      } else {
+        alert(`❌ 重置失败: ${data.detail || data.message}`);
+      }
     } catch (err) {
       console.error("Failed to reset email", err);
+      alert(`❌ 网络错误: ${err.message}`);
     }
   };
 
