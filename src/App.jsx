@@ -590,7 +590,7 @@ export default function App() {
   const handleSendReply = async (emailId) => {
     if (!selectedEmail) return;
     try {
-      await fetch('http://localhost:8010/send-reply', {
+      const res = await fetch('http://localhost:8010/send-reply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -601,10 +601,22 @@ export default function App() {
           attachments: replyAttachments.map(a => ({ filename: a.name, content: a.content.split(',')[1] })) // Base64 part only
         })
       });
-      setEmails(emails.map(e => e.id === emailId ? { ...e, status: 'processed', sentReply: selectedEmail.aiAnalysis?.draftReply } : e));
-      setSelectedEmail(null);
-      setReplyAttachments([]);
-    } catch (e) { alert("发送失败"); }
+
+      const data = await res.json();
+
+      if (data.status === 'success') {
+        alert(`✅ 邮件回复已发送！\n收件人: ${selectedEmail.from}`);
+        setEmails(emails.map(e => e.id === emailId ? { ...e, status: 'processed', sentReply: selectedEmail.aiAnalysis?.draftReply } : e));
+        setSelectedEmail(null);
+        fetchPendingDrafts();
+        setReplyAttachments([]);
+      } else {
+        alert(`❌ 发送失败: ${data.detail || data.message || '未知错误'}`);
+      }
+    } catch (e) {
+      console.error("Failed to send reply", e);
+      alert(`❌ 网络错误: ${e.message}`);
+    }
   };
 
   const handleMarkResolved = async (emailId) => {
