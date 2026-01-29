@@ -37,6 +37,7 @@ __pycache__/
 
 # AI & Knowledge Base
 backend/faiss_index/
+backend/faiss_index_metadata.json
 backend/knowledge_base/
 
 # Environments
