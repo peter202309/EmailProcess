@@ -17,7 +17,7 @@ export default function KBManager({ isOpen, onClose }) {
 
     const fetchFiles = async () => {
         try {
-            const res = await fetch('http://localhost:8000/kb-files');
+            const res = await fetch('http://localhost:8010/kb-files');
             const data = await res.json();
             setFiles(data);
         } catch (error) {
@@ -28,7 +28,7 @@ export default function KBManager({ isOpen, onClose }) {
     const handleScan = async () => {
         setIsScanning(true);
         try {
-            const res = await fetch('http://localhost:8000/kb-files/scan', { method: 'POST' });
+            const res = await fetch('http://localhost:8010/kb-files/scan', { method: 'POST' });
             const data = await res.json();
             setChanges(data.changes);
         } catch (error) {
@@ -41,7 +41,7 @@ export default function KBManager({ isOpen, onClose }) {
     const handleSync = async () => {
         setIsSyncing(true);
         try {
-            const res = await fetch('http://localhost:8000/kb-files/sync', { method: 'POST' });
+            const res = await fetch('http://localhost:8010/kb-files/sync', { method: 'POST' });
             const data = await res.json();
             alert(data.message || '同步完成！');
             setChanges(null);
@@ -62,7 +62,7 @@ export default function KBManager({ isOpen, onClose }) {
         formData.append('file', file);
 
         try {
-            const res = await fetch('http://localhost:8000/kb-files/upload', {
+            const res = await fetch('http://localhost:8010/kb-files/upload', {
                 method: 'POST',
                 body: formData
             });
@@ -83,7 +83,7 @@ export default function KBManager({ isOpen, onClose }) {
         if (!confirm(`确定要删除 "${filename}" 吗？`)) return;
 
         try {
-            const res = await fetch(`http://localhost:8000/kb-files/${fileId}`, { method: 'DELETE' });
+            const res = await fetch(`http://localhost:8010/kb-files/${fileId}`, { method: 'DELETE' });
             const data = await res.json();
             if (data.status === 'success') {
                 alert('文件已删除');
@@ -98,7 +98,7 @@ export default function KBManager({ isOpen, onClose }) {
     const handleViewHistory = async (file) => {
         setSelectedFile(file);
         try {
-            const res = await fetch(`http://localhost:8000/kb-files/${file.id}/history`);
+            const res = await fetch(`http://localhost:8010/kb-files/${file.id}/history`);
             const data = await res.json();
             setFileHistory(data.history || []);
         } catch (error) {
