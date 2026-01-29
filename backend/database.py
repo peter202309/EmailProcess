@@ -134,6 +134,43 @@ def init_db():
         )
     ''')
 
+    # Create KB Files Table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS kb_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_size INTEGER,
+            file_hash TEXT NOT NULL,
+            version INTEGER DEFAULT 1,
+            upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_modified TIMESTAMP,
+            is_active INTEGER DEFAULT 1,
+            sync_status TEXT DEFAULT 'pending',
+            sync_time TIMESTAMP,
+            metadata TEXT
+        )
+    ''')
+
+    # Create KB File Versions Table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS kb_file_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER,
+            version INTEGER,
+            file_hash TEXT,
+            file_size INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            backup_path TEXT,
+            FOREIGN KEY (file_id) REFERENCES kb_files(id)
+        )
+    ''')
+
+    # Create indexes for KB files
+    c.execute("CREATE INDEX IF NOT EXISTS idx_kb_filename ON kb_files(filename)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_kb_file_hash ON kb_files(file_hash)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_kb_sync_status ON kb_files(sync_status)")
+
     # Migration: Update emails table
     c.execute("PRAGMA table_info(emails)")
     e_cols = [col[1] for col in c.fetchall()]

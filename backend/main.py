@@ -1006,10 +1006,87 @@ def post_debug_log(request: DebugLogRequest):
     with open("debug.log", "a", encoding="utf-8") as f:
         f.write(log_entry)
     
+    
     # Also print to terminal
     print(log_entry.strip())
     
     return {"status": "success"}
+
+# --- KB File Management Routes ---
+from kb_manager import KBFileManager
+from fastapi import UploadFile, File
+import shutil
+
+@app.get("/kb-files")
+def get_kb_files():
+    """Get list of all KB files with version info."""
+    manager = KBFileManager()
+    return manager.get_all_files()
+
+@app.post("/kb-files/scan")
+def scan_kb_directory():
+    """Scan directory and detect changes."""
+    manager = KBFileManager()
+    changes = manager.detect_changes()
+    return {"status": "success", "changes": changes}
+
+@app.post("/kb-files/sync")
+def auto_sync_changes():
+    """Automatically detect and sync all changes."""
+    manager = KBFileManager()
+    result = manager.auto_sync_changes()
+    return result
+
+@app.post("/kb-files/upload")
+async def upload_kb_file(file: UploadFile = File(...)):
+    """Upload new file to KB directory."""
+    try:
+        manager = KBFileManager()
+        
+        # Save file to knowledge_base directory
+        file_path = os.path.join(manager.kb_dir, file.filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Calculate file info
+        stat = os.stat(file_path)
+        file_info = {
+            "filename": file.filename,
+            "path": file.filename,
+            "full_path": file_path,
+            "size": stat.st_size,
+            "hash": manager.calculate_file_hash(file_path),
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+        
+        # Add to database
+        file_id = manager.add_file(file_info)
+        
+        return {
+            "status": "success",
+            "message": f"File uploaded successfully",
+            "file_id": file_id,
+            "filename": file.filename
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+@app.get("/kb-files/{file_id}/history")
+def get_file_history(file_id: int):
+    """Get version history for a file."""
+    manager = KBFileManager()
+    history = manager.get_file_history(file_id)
+    return {"status": "success", "history": history}
+
+@app.delete("/kb-files/{file_id}")
+def delete_kb_file(file_id: int):
+    """Soft delete a file (mark as inactive)."""
+    try:
+        manager = KBFileManager()
+        manager.mark_file_deleted(file_id)
+        return {"status": "success", "message": f"File {file_id} marked as deleted"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 if __name__ == "__main__":
     import uvicorn

@@ -28,8 +28,10 @@ import {
   Check,
   ExternalLink,
   RotateCcw,
-  Edit
+  Edit,
+  FolderOpen
 } from 'lucide-react';
+import KBManager from './KBManager';
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 const groqKey = import.meta.env.VITE_GROQ_API_KEY;
@@ -126,6 +128,7 @@ export default function App() {
   const [dashboardFilter, setDashboardFilter] = useState('all'); // 'all', 'pending', 'resolved', 'replied'
   const [previewFile, setPreviewFile] = useState(null); // {url, filename, type, storedName}
   const [isAnalyzingAtt, setIsAnalyzingAtt] = useState(false);
+  const [isKBManagerOpen, setIsKBManagerOpen] = useState(false);
   const [attAnalysis, setAttAnalysis] = useState(null);
   const [editingTemplate, setEditingTemplate] = useState(null);
 
@@ -1853,3 +1856,6 @@ function EmailRow({ email, onClick }) {
     </div>
   );
 }
+
+{/* KB Manager Modal */ }
+<KBManager isOpen={isKBManagerOpen} onClose={() => setIsKBManagerOpen(false)} />
