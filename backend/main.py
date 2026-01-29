@@ -339,12 +339,16 @@ async def send_approved_drafts():
                                 "content": content
                             })
                 
+                # Append Quoted Context
+                quote = f"\n\n\n------------------ Original Message ------------------\nFrom: {draft['from_addr']}\nDate: {draft['received_at']}\nSubject: {draft['subject']}\n\n{draft['body']}"
+                full_reply_body = reply_body + quote
+
                 # Send the email
                 success = send_email(
                     draft['account_owner'],
                     draft['from_addr'],
                     draft['subject'],
-                    reply_body,
+                    full_reply_body,
                     attachments=attachments_to_send,
                     original_message_id=draft.get('message_id')
                 )
@@ -618,12 +622,16 @@ async def auto_trigger_processing():
                                 "content": content
                             })
 
+                        # Append Quoted Context for Auto-Reply
+                        quote = f"\n\n\n------------------ Original Message ------------------\nFrom: {email['from']}\nDate: {email['receivedAt']}\nSubject: {email['subject']}\n\n{email['body']}"
+                        full_reply_body = final_draft + quote
+
                         # Send reply
                         success = send_email(
                             email['accountOwner'],
                             email['from'],
                             email['subject'],
-                            final_draft,
+                            full_reply_body,
                             attachments=processed_attachments,
                             original_message_id=email.get('message_id')
                         )
@@ -1053,11 +1061,15 @@ def send_reply(request: SendReplyRequest):
         owner = original.get('accountOwner')
         msg_id = original.get('message_id')
         
+        # Append Quoted Context
+        quote = f"\n\n\n------------------ Original Message ------------------\nFrom: {original['from']}\nDate: {original['receivedAt']}\nSubject: {original['subject']}\n\n{original['body']}"
+        full_reply_body = request.replyBody + quote
+        
         success = send_email(
             owner, 
             request.recipient, 
             request.subject, 
-            request.replyBody, 
+            full_reply_body, 
             request.attachments,
             msg_id
         )
@@ -1167,6 +1179,36 @@ def delete_kb_file(file_id: int):
         return {"status": "success", "message": f"File {file_id} marked as deleted"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+
+
+# --- Static File Serving (for robust deployment) ---
+from fastapi.staticfiles import StaticFiles
+
+# Check if dist folder exists (relative to where main.py is run, or one level up)
+# We assume main.py is in /backend, and dist is in /dist (root)
+DIST_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dist")
+
+if os.path.exists(DIST_DIR):
+    # Mount assets folder
+    # Vite places assets in dist/assets
+    app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
+
+    # Serve index.html for root and catch-all (for SPA routing)
+    @app.get("/{full_path:path}")
+    async def catch_all(full_path: str):
+        # Allow API routes to pass through if they weren't caught above (though they should be)
+        # However, FastAPI routing priority is top-down. Static files usually come last.
+        # But for mounting root, we use a catch-all route.
+        
+        # Check if it's a file request that exists in dist (e.g. favicon.ico)
+        file_path = os.path.join(DIST_DIR, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+             return FileResponse(file_path)
+             
+        # Otherwise serve index.html
+        return FileResponse(os.path.join(DIST_DIR, "index.html"))
+else:
+    print(f"Warning: DIST_DIR {DIST_DIR} not found. Frontend will not be served.")
 
 if __name__ == "__main__":
     import uvicorn
