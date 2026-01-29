@@ -12,3 +12,4 @@ langchain-google-genai
 faiss-cpu
 beautifulsoup4
 langchain-openai
+python-multipart

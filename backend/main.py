@@ -13,6 +13,13 @@ from imap_tools import MailBox, AND
 from bs4 import BeautifulSoup
 import re
 from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+from email.header import Header
+import base64
 
 from rag import RAGService
 import database
@@ -316,12 +323,28 @@ async def send_approved_drafts():
                     errors.append(f"No draft found for {draft['from_addr']}")
                     continue
 
+                # Get attachments if any (from template match in dry run)
+                attachments_to_send = []
+                if draft['ai_analysis']:
+                     analysis = json.loads(draft['ai_analysis'])
+                     template_attachments = analysis.get('templateAttachments', [])
+                     if template_attachments:
+                         for att in template_attachments:
+                            content = att.get('content', '')
+                            if ',' in content: # Data URI
+                                content = content.split(',')[1]
+                            attachments_to_send.append({
+                                "filename": att.get('name'),
+                                "content": content
+                            })
+                
                 # Send the email
                 success = send_email(
                     draft['account_owner'],
                     draft['from_addr'],
                     draft['subject'],
                     reply_body,
+                    attachments=attachments_to_send,
                     original_message_id=draft.get('message_id')
                 )
                 
@@ -538,6 +561,17 @@ async def auto_trigger_processing():
             requires_reply = analysis_result.get('requiresReply', True)
             is_auto_match = analysis_result.get('matchedTemplate') is not None
             
+            # Check if template is verified by AI
+            template_confidence = analysis_result.get('templateConfidence', 0.0)
+            use_template = analysis_result.get('useTemplate', False)
+            
+            # A template match is only valid if AI trusts it.
+            # We use a lower threshold (0.6) for templates because keywords are a strong signal.
+            template_threshold = 0.6
+            if is_auto_match and template_confidence < template_threshold:
+                 database.log_event("TEMPLATE_REJECTED", email['id'], f"AI rejected keyword match. Conf: {template_confidence}")
+                 is_auto_match = False
+            
             if auto_reply_mode or dry_run_mode:
                 if requires_reply is False and confidence >= threshold:
                     # Auto-resolve
@@ -559,7 +593,8 @@ async def auto_trigger_processing():
                             "category": analysis_result.get('category', 'Information'),
                             "intent": "Auto-Template Match" if is_auto_match else analysis_result.get('intent', ''),
                             "sourcesUsed": analysis_result.get('sourcesUsed', []),
-                            "ragSources": analysis_result.get('ragSources', [])
+                            "ragSources": analysis_result.get('ragSources', []),
+                            "templateAttachments": attachments  # Persist attachments for later sending
                         }
                         # Set status to PROCESSED so it shows up in pending drafts
                         database.update_email_status(email['id'], "processed", analysis=analysis_payload)
@@ -643,12 +678,27 @@ async def analyze_email(request: ProcessingRequest):
     if rag_results:
         context_str = "\n\n".join([f"[Source: {r['source']}]\n{r['content']}" for r in rag_results])
     
+    # Template Verification Context
+    template_section = ""
+    if matched_template:
+        template_section = f"""
+    [Candidate Template Match]:
+    A keyword rule suggested using the template "{matched_template['name']}".
+    Template Content: "{matched_template['content']}"
+    
+    TASK: Evaluate if this template is actually a good fit for the email.
+    - If it is reasonably relevant (confidence > 0.6), set 'useTemplate' to true.
+    - If it is a false positive (keyword present but context wrong meaning), set 'useTemplate' to false.
+    """
+
     prompt = f"""
     You are a professional customer service assistant. Analyze this email using the provided knowledge base context if relevant.
     
     [Knowledge Base Context]:
     {context_str if context_str else "No relevant context found in Knowledge Base."}
     
+    {template_section}
+
     [Email]:
     Subject: {request.emailSubject}
     Body: {request.emailBody}
@@ -661,6 +711,7 @@ async def analyze_email(request: ProcessingRequest):
     2. **Confidence Score**: Assign a 'confidence' score between 0.0 and 1.0 based on how well the context matches the query.
     3. **Sources**: If you use information from the Knowledge Base Context, list the source filenames (e.g., 'policy.pdf') in 'sourcesUsed'.
     4. **Reply Detection**: Determine if this email requires a reply. Newsletters, notifications, automated messages, and informational emails do NOT require replies.
+    5. **Template Verification**: If a [Candidate Template Match] was provided, specifically evaluate it. Set 'templateConfidence' (0.0-1.0) and 'useTemplate' (bool).
     
     Return EXACTLY a JSON object with:
     - category: (One of: Urgent, Billing, Technical, Sales, Support, Information, Spam, Newsletter)
@@ -669,8 +720,10 @@ async def analyze_email(request: ProcessingRequest):
     - isUrgent: (boolean, TRUE if the email requires immediate attention)
     - requiresReply: (boolean, TRUE if this email needs a response, FALSE for newsletters/notifications/automated messages)
     - suggestedAction: (auto_reply, manual_review, ignore)
-    - draftReply: (professional response in the detected language, ONLY if requiresReply is TRUE, otherwise empty string)
+    - draftReply: (professional response in the detected language, or the Template content if useTemplate is true, or empty if no reply needed)
     - sourcesUsed: (list of strings, filenames used from context)
+    - useTemplate: (boolean, true if the keyword-matched template is appropriate)
+    - templateConfidence: (float, 0.0 to 1.0, confidence in the template match)
     """
 
     analysis_payload = await call_ai_with_fallback(prompt, request.provider)
@@ -694,7 +747,9 @@ async def analyze_email(request: ProcessingRequest):
         "intent": analysis_payload.get("intent", ""),
         "sourcesUsed": analysis_payload.get("sourcesUsed", []),
         "ragSources": analysis_payload["ragSources"],
-        "matchedTemplate": matched_template
+        "matchedTemplate": matched_template,
+        "templateConfidence": analysis_payload.get("templateConfidence", 0.0),
+        "useTemplate": analysis_payload.get("useTemplate", False)
     }
 
 @app.post("/analyze-attachment")
@@ -840,6 +895,8 @@ def _call_openai_compatible(prompt: str, base_url: str, api_key: str, model: str
             "category": res_data.get("category", "Information"),
             "intent": res_data.get("intent", ""),
             "sourcesUsed": res_data.get("sourcesUsed", []),
+            "useTemplate": bool(res_data.get("useTemplate", False)),
+            "templateConfidence": float(res_data.get("templateConfidence", 0.0))
         }
     except:
         raise Exception(f"Failed to parse JSON from {model}")
@@ -873,6 +930,8 @@ def _call_groq_sync(prompt: str):
         "category": res_data.get("category", "Information"),
         "intent": res_data.get("intent", ""),
         "sourcesUsed": res_data.get("sourcesUsed", []),
+        "useTemplate": bool(res_data.get("useTemplate", False)),
+        "templateConfidence": float(res_data.get("templateConfidence", 0.0))
     }
 
 def _call_gemini_sync(prompt: str):
@@ -895,6 +954,8 @@ def _call_gemini_sync(prompt: str):
         "category": res_data.get("category", "Information"),
         "intent": res_data.get("intent", ""),
         "sourcesUsed": res_data.get("sourcesUsed", []),
+        "useTemplate": bool(res_data.get("useTemplate", False)),
+        "templateConfidence": float(res_data.get("templateConfidence", 0.0))
     }
 
 # --- Tasks Routes ---
@@ -955,7 +1016,10 @@ def send_email(account_owner: str, recipient: str, subject: str, body: str, atta
                     part = MIMEBase('application', 'octet-stream')
                     part.set_payload(base64.b64decode(content))
                     encoders.encode_base64(part)
-                    part.add_header('Content-Disposition', f'attachment; filename="{file_name}"')
+                    
+                    # Fix for filename encoding (Chinese/Special chars)
+                    encoded_filename = Header(file_name, 'utf-8').encode()
+                    part.add_header('Content-Disposition', 'attachment', filename=encoded_filename)
                     msg.attach(part)
 
         # Connect to SMTP (SSL)
