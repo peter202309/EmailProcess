@@ -354,6 +354,16 @@ export default function App() {
     fetchKbStatus();
   }, []);
 
+  // Auto-refresh emails and drafts every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchEmails();
+      fetchPendingDrafts();
+    }, 10000); // 10 seconds
+
+    return () => clearInterval(interval); // Cleanup on unmount
+  }, []);
+
   const handleSelectEmail = async (email) => {
     setSelectedEmail(email);
 
