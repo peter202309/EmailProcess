@@ -1,8 +1,49 @@
 import sqlite3
 import json
 from datetime import datetime
+from contextlib import contextmanager
 
 DB_NAME = "mailguard.db"
+
+@contextmanager
+def get_db_connection():
+    """
+    Context manager for safe database connections.
+    Automatically handles connection opening, committing, and closing.
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME, timeout=30, check_same_thread=False)
+        conn.row_factory = sqlite3.Row  # Enable dict-like access
+        yield conn
+        conn.commit()
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        raise e
+    finally:
+        if conn:
+            conn.close()
+
+def safe_db_operation(func):
+    """
+    Decorator for database operations that ensures proper connection handling.
+    """
+    def wrapper(*args, **kwargs):
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    import time
+                    time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                    continue
+                raise e
+            except Exception as e:
+                raise e
+        return None
+    return wrapper
 
 def init_db():
     conn = sqlite3.connect(DB_NAME, timeout=30)
@@ -373,27 +414,26 @@ def log_event(action, email_id, detail):
     conn.commit()
     conn.close()
 
+@safe_db_operation
 def update_email_status(email_id, status, analysis=None, sent_reply=None):
-    conn = sqlite3.connect(DB_NAME, timeout=30)
-    c = conn.cursor()
-    sent_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if sent_reply else None
-    
-    if analysis and sent_reply:
-        analysis_json = json.dumps(analysis)
-        c.execute("UPDATE emails SET status = ?, ai_analysis = ?, sent_reply = ?, sent_at = ?, dry_run_mode = 0, approval_status = 'sent' WHERE id = ?", (status, analysis_json, sent_reply, sent_at, email_id))
-    elif analysis:
-        analysis_json = json.dumps(analysis)
-        c.execute("UPDATE emails SET status = ?, ai_analysis = ? WHERE id = ?", (status, analysis_json, email_id))
-    elif sent_reply:
-        c.execute("UPDATE emails SET status = ?, sent_reply = ?, sent_at = ?, dry_run_mode = 0, approval_status = 'sent' WHERE id = ?", (status, sent_reply, sent_at, email_id))
-    else:
-        # If just updating status to 'processed' (resolved), also clear dry run
-        if status == 'processed':
-            c.execute("UPDATE emails SET status = ?, dry_run_mode = 0, approval_status = 'resolved' WHERE id = ?", (status, email_id))
+    with get_db_connection() as conn:
+        c = conn.cursor()
+        sent_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if sent_reply else None
+        
+        if analysis and sent_reply:
+            analysis_json = json.dumps(analysis)
+            c.execute("UPDATE emails SET status = ?, ai_analysis = ?, sent_reply = ?, sent_at = ?, dry_run_mode = 0, approval_status = 'sent' WHERE id = ?", (status, analysis_json, sent_reply, sent_at, email_id))
+        elif analysis:
+            analysis_json = json.dumps(analysis)
+            c.execute("UPDATE emails SET status = ?, ai_analysis = ? WHERE id = ?", (status, analysis_json, email_id))
+        elif sent_reply:
+            c.execute("UPDATE emails SET status = ?, sent_reply = ?, sent_at = ?, dry_run_mode = 0, approval_status = 'sent' WHERE id = ?", (status, sent_reply, sent_at, email_id))
         else:
-            c.execute("UPDATE emails SET status = ? WHERE id = ?", (status, email_id))
-    conn.commit()
-    conn.close()
+            # If just updating status to 'processed' (resolved), also clear dry run
+            if status == 'processed':
+                c.execute("UPDATE emails SET status = ?, dry_run_mode = 0, approval_status = 'resolved' WHERE id = ?", (status, email_id))
+            else:
+                c.execute("UPDATE emails SET status = ? WHERE id = ?", (status, email_id))
 
 # --- Tasks ---
 def get_tasks():
