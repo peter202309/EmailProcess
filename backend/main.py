@@ -184,13 +184,16 @@ def get_kb_status():
     }
 
 @app.post("/rebuild-kb")
-def rebuild_kb():
+def rebuild_kb(incremental: bool = True):
     """
     Rebuild the Knowledge Base index from documents in knowledge_base/ folder.
+    
+    Args:
+        incremental: If True (default), only process changed files. If False, rebuild from scratch.
     """
     try:
         from build_kb import build_index
-        result = build_index()
+        result = build_index(incremental=incremental)
         # Reload RAG service to pick up new index
         global rag_service
         rag_service = RAGService()
