@@ -771,6 +771,14 @@ export default function App() {
               <div className={`w-1.5 h-1.5 rounded-full ${kbStatus.active ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
               Knowledge Base: {kbStatus.active ? `${kbStatus.doc_count} Docs` : 'Click to Build'}
             </div>
+            <button
+              onClick={() => setIsKBManagerOpen(true)}
+              className="ml-2 px-3 py-1.5 bg-purple-600 text-white rounded-lg text-[10px] font-bold hover:bg-purple-700 flex items-center gap-1.5 transition-colors shadow-sm"
+              title="管理知识库文件"
+            >
+              <FolderOpen size={12} />
+              知识库管理
+            </button>
           </div>
           <div className="flex gap-3">
             <button onClick={simulateNewEmail} className="px-4 py-2 border rounded-md text-sm hover:bg-gray-50 flex items-center gap-2"><RefreshCw size={14} /> 刷新</button>
