@@ -183,11 +183,33 @@ export default function App() {
     }
   };
 
+  const fetchLogs = async () => {
+    try {
+      const res = await fetch('http://localhost:8010/logs');
+      const data = await res.json();
+      if (Array.isArray(data)) setLogs(data);
+    } catch (e) { console.error("Logs fetch error", e); }
+  };
+
+  const fetchTemplates = async () => {
+    try {
+      const res = await fetch('http://localhost:8010/templates');
+      const data = await res.json();
+      if (Array.isArray(data)) setTemplates(data);
+    } catch (e) { console.error("Templates fetch error", e); }
+  };
+
+  const fetchTasks = async () => {
+    try {
+      const res = await fetch('http://localhost:8010/tasks');
+      const data = await res.json();
+      if (Array.isArray(data)) setTasks(data);
+    } catch (e) { console.error("Tasks fetch error", e); }
+  };
+
   const loadInitialData = async () => {
     try {
-      const tRes = await fetch('http://localhost:8010/templates');
-      const tData = await tRes.json();
-      if (Array.isArray(tData)) setTemplates(tData);
+      await fetchTemplates();
 
       const sRes = await fetch('http://localhost:8010/settings');
       const sData = await sRes.json();
@@ -203,14 +225,8 @@ export default function App() {
         setConfig(prev => ({ ...prev, ...parsedData }));
       }
 
-      const lRes = await fetch('http://localhost:8010/logs');
-      const lData = await lRes.json();
-      if (Array.isArray(lData)) setLogs(lData);
-
-      const tskRes = await fetch('http://localhost:8010/tasks');
-      const tskData = await tskRes.json();
-      if (Array.isArray(tskData)) setTasks(tskData);
-
+      await fetchLogs();
+      await fetchTasks();
       fetchPendingDrafts();
     } catch (err) {
       console.error("Failed to load initial data", err);
@@ -359,6 +375,9 @@ export default function App() {
     const interval = setInterval(() => {
       fetchEmails();
       fetchPendingDrafts();
+      fetchLogs();
+      fetchTasks();
+      fetchTemplates();
     }, 10000); // 10 seconds
 
     return () => clearInterval(interval); // Cleanup on unmount
