@@ -164,7 +164,14 @@ def delete_template(id: str):
 # --- Settings Routes ---
 @app.get("/settings")
 def get_settings():
-    return database.get_settings()
+    # Merge raw DB settings with AI defaults to ensure frontend gets full config
+    db_settings = database.get_settings()
+    ai_defaults = database.get_ai_settings()
+    
+    combined = db_settings.copy()
+    combined.update(ai_defaults)
+    
+    return combined
 
 @app.post("/settings")
 def save_setting(setting: SettingSchema):
@@ -703,9 +710,18 @@ async def analyze_email(request: ProcessingRequest):
     - If it is a false positive (keyword present but context wrong meaning), set 'useTemplate' to false.
     """
 
+    # Retrieve Dynamic Persona Settings
+    ai_settings = database.get_ai_settings()
+
     prompt = f"""
-    You are a professional customer service assistant. Analyze this email using the provided knowledge base context if relevant.
+    You are {ai_settings['ai_persona_org']}. {ai_settings['ai_persona_role']}
     
+    [Tone Guidelines]:
+    {ai_settings['ai_persona_tone']}
+
+    [Few-Shot Examples (Follow this style)]:
+    {ai_settings['ai_persona_examples']}
+
     [Knowledge Base Context]:
     {context_str if context_str else "No relevant context found in Knowledge Base."}
     
@@ -738,7 +754,7 @@ async def analyze_email(request: ProcessingRequest):
     - templateConfidence: (float, 0.0 to 1.0, confidence in the template match)
     """
 
-    analysis_payload = await call_ai_with_fallback(prompt, request.provider)
+    analysis_payload = await call_ai_with_fallback(prompt, request.provider, temperature=0.1)
     
     # Enrich the payload with RAG sources before saving
     analysis_payload["ragSources"] = list(set([r['source'] for r in rag_results])) if rag_results else []
@@ -842,7 +858,7 @@ async def analyze_attachment(emailId: str, storedName: str):
         # Generic error
         return {"status": "error", "message": f"分析失败: {error_msg}"}
 
-async def call_ai_with_fallback(prompt: str, primary_provider: str):
+async def call_ai_with_fallback(prompt: str, primary_provider: str, temperature: float = 0.1):
     """
     Attempts to call the primary provider. If it hits a quota/rate limit, 
     automatically falls back to the other provider if available.
@@ -857,13 +873,13 @@ async def call_ai_with_fallback(prompt: str, primary_provider: str):
     for provider in providers:
         try:
             if provider == 'groq':
-                return _call_groq_sync(prompt)
+                return _call_groq_sync(prompt, temperature)
             elif provider == 'openai':
-                return _call_openai_compatible(prompt, "https://api.openai.com/v1", os.getenv("OPENAI_API_KEY"), "gpt-4o")
+                return _call_openai_compatible(prompt, "https://api.openai.com/v1", os.getenv("OPENAI_API_KEY"), "gpt-4o", temperature)
             elif provider == 'deepseek':
-                return _call_openai_compatible(prompt, "https://api.deepseek.com/v1", os.getenv("DEEPSEEK_API_KEY"), "deepseek-chat")
+                return _call_openai_compatible(prompt, "https://api.deepseek.com/v1", os.getenv("DEEPSEEK_API_KEY"), "deepseek-chat", temperature)
             else:
-                return _call_gemini_sync(prompt)
+                return _call_gemini_sync(prompt, temperature)
         except Exception as e:
             last_error = e
             # Log the fallback attempt
@@ -877,7 +893,7 @@ async def call_ai_with_fallback(prompt: str, primary_provider: str):
 
     raise HTTPException(status_code=500, detail=f"All AI providers failed. Last error: {last_error}")
 
-def _call_openai_compatible(prompt: str, base_url: str, api_key: str, model: str):
+def _call_openai_compatible(prompt: str, base_url: str, api_key: str, model: str, temperature: float = 0.1):
     if not api_key:
         raise Exception(f"API Key for model {model} not found")
     
@@ -887,7 +903,8 @@ def _call_openai_compatible(prompt: str, base_url: str, api_key: str, model: str
         json={
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"} if "openai" in base_url or "deepseek" in base_url else None
+            "response_format": {"type": "json_object"} if "openai" in base_url or "deepseek" in base_url else None,
+            "temperature": temperature
         },
         timeout=30
     )
@@ -913,7 +930,7 @@ def _call_openai_compatible(prompt: str, base_url: str, api_key: str, model: str
     except:
         raise Exception(f"Failed to parse JSON from {model}")
 
-def _call_groq_sync(prompt: str):
+def _call_groq_sync(prompt: str, temperature: float = 0.1):
     groq_key = os.getenv("VITE_GROQ_API_KEY")
     if not groq_key:
         raise Exception("Groq API Key not found")
@@ -923,7 +940,8 @@ def _call_groq_sync(prompt: str):
         headers={"Authorization": f"Bearer {groq_key}"},
         json={
             "model": "llama-3.3-70b-versatile",
-            "messages": [{"role": "user", "content": prompt}]
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature
         },
         timeout=30
     )
@@ -946,14 +964,17 @@ def _call_groq_sync(prompt: str):
         "templateConfidence": float(res_data.get("templateConfidence", 0.0))
     }
 
-def _call_gemini_sync(prompt: str):
+def _call_gemini_sync(prompt: str, temperature: float = 0.1):
     if not client:
         raise Exception("Gemini client not initialized")
     
     response = client.models.generate_content(
         model='gemini-2.0-flash', 
         contents=prompt,
-        config={'response_mime_type': 'application/json'}
+        config={
+            'response_mime_type': 'application/json',
+            'temperature': temperature
+        }
     )
     import json
     res_data = json.loads(response.text)

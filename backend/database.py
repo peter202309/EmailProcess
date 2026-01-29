@@ -437,6 +437,35 @@ def get_bool_setting(key, default=False):
     if val is None: return default
     return str(val).lower() in ('true', '1', 'yes', 'on')
 
+def get_ai_settings():
+    """Get AI persona settings with defaults for China Eastern Airlines context."""
+    settings = get_settings()
+    
+    defaults = {
+        "ai_persona_org": "China Eastern Airlines Toronto Office",
+        "ai_persona_role": "customer service and ticketing support representative",
+        "ai_persona_tone": "Professional, efficient, and polite. For complaints, be empathetic and apologetic. For travel agents, serve as a B2B support expert: be concise, use industry codes (PNR, Waiver), and be direct.",
+        "ai_persona_examples": """[Example 1: Agent - Waiver Request]
+Input: "PNR ABCDEF, flight cancelled, need waiver for full refund."
+Reply: "Hi team,\nWaiver code MU/RO/240129/001 issued for PNR ABCDEF due to involuntary cancellation. Please proceed with full refund via BSP/ARC.\nRegards, MU Toronto."
+
+[Example 2: Passenger - Luggage Complaint]
+Input: "My luggage is broken! I am very angry!"
+Reply: "尊敬的旅客您好，\n非常抱歉听到您的行李在旅途中受损，完全理解这给您带来的不便。\n为了协助您理赔，请提供......我们会根据东航行李运输规定，尽快为您跟进处理。"
+
+[Example 3: Passenger - Policy Query]
+Input: "我想把下周三的回国机票改期，要多少钱？"
+Reply: "您好，经查询您的票号...目前属于[R]舱。改期费为200 CAD + 票价差额。目前查询同航班差价为50 CAD。预计总费用约为 250 CAD。如需确认改期，请回复确认。" """
+    }
+    
+    # Merge defaults with actual settings
+    result = defaults.copy()
+    for k, v in settings.items():
+        if k in defaults:
+            result[k] = v
+            
+    return result
+
 # --- Logs ---
 def get_logs(limit=50):
     conn = sqlite3.connect(DB_NAME, timeout=30)

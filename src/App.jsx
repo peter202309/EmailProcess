@@ -1738,6 +1738,64 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              {/* AI Persona Configuration */}
+              <div className="mt-8 border-t pt-8">
+                <h3 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+                  <Bot className="text-purple-600" /> AI 角色与人设配置
+                </h3>
+                <div className="space-y-6 bg-purple-50/50 p-6 rounded-xl border border-purple-100">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-bold text-gray-700 mb-2">组织名称 (Organization)</label>
+                      <input
+                        type="text"
+                        className="w-full border border-gray-300 rounded-md p-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                        placeholder="e.g. China Eastern Airlines Toronto Office"
+                        value={config.ai_persona_org || ''}
+                        onChange={e => setConfig({ ...config, ai_persona_org: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-gray-700 mb-2">角色描述 (Role)</label>
+                      <input
+                        type="text"
+                        className="w-full border border-gray-300 rounded-md p-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                        placeholder="e.g. Senior Customer Service Representative"
+                        value={config.ai_persona_role || ''}
+                        onChange={e => setConfig({ ...config, ai_persona_role: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">语气与风格指南 (Tone Guidelines)</label>
+                    <textarea
+                      className="w-full border border-gray-300 rounded-md p-2.5 text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none h-24"
+                      placeholder="描述 AI 应该使用的语气..."
+                      value={config.ai_persona_tone || ''}
+                      onChange={e => setConfig({ ...config, ai_persona_tone: e.target.value })}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">少样本范例 (Few-Shot Examples)</label>
+                    <p className="text-xs text-gray-500 mb-2">提供 2-3 个理想的问答范例，这对稳定 AI 输出至关重要。</p>
+                    <textarea
+                      className="w-full border border-gray-300 rounded-md p-2.5 text-xs font-mono focus:ring-2 focus:ring-purple-500 focus:outline-none h-48"
+                      placeholder="[Example 1]..."
+                      value={config.ai_persona_examples || ''}
+                      onChange={e => setConfig({ ...config, ai_persona_examples: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button onClick={handleSaveConfig} className="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 text-sm font-bold shadow-md transition-colors flex items-center gap-2">
+                      <Save size={16} /> 保存 AI 配置
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </main>
