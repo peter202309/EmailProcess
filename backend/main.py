@@ -1109,11 +1109,27 @@ from kb_manager import KBFileManager
 from fastapi import UploadFile, File
 import shutil
 
+class KBFileUpdate(BaseModel):
+    category: Optional[str] = None
+    expiry_date: Optional[str] = None
+
 @app.get("/kb-files")
 def get_kb_files():
     """Get list of all KB files with version info."""
     manager = KBFileManager()
     return manager.get_all_files()
+
+@app.patch("/kb-files/{file_id}")
+def update_kb_file(file_id: int, update: KBFileUpdate):
+    """Update category and expiry date for a file."""
+    try:
+        success = database.update_kb_file_metadata(file_id, update.category, update.expiry_date)
+        if success:
+            return {"status": "success"}
+        else:
+            return {"status": "error", "message": "Failed to update database"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 @app.post("/kb-files/scan")
 def scan_kb_directory():

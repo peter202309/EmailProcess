@@ -67,6 +67,10 @@ class KBFileManager:
         rows = c.fetchall()
         files = []
         for row in rows:
+            # Check if columns exist (handle old schema gracefully if needed, though migration covers it)
+            # dict(row) or row.keys() can be used to check existence, 
+            # but usually row['column'] works if the query was SELECT * and column exists.
+            
             files.append({
                 "id": row["id"],
                 "filename": row["filename"],
@@ -78,7 +82,9 @@ class KBFileManager:
                 "last_modified": row["last_modified"],
                 "sync_status": row["sync_status"],
                 "sync_time": row["sync_time"],
-                "metadata": json.loads(row["metadata"]) if row["metadata"] else {}
+                "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                "category": row["category"] if "category" in row.keys() else None,
+                "expiry_date": row["expiry_date"] if "expiry_date" in row.keys() else None
             })
         
         conn.close()

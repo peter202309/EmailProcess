@@ -239,8 +239,52 @@ def init_db():
         c.execute("ALTER TABLE templates ADD COLUMN attachments_json TEXT")
         print("Migration: Added attachments_json column to templates table.")
 
+    # Migration: Update kb_files table
+    c.execute("PRAGMA table_info(kb_files)")
+    kb_cols = [col[1] for col in c.fetchall()]
+    if "category" not in kb_cols:
+        c.execute("ALTER TABLE kb_files ADD COLUMN category TEXT")
+        print("Migration: Added category column to kb_files table.")
+    if "expiry_date" not in kb_cols:
+        c.execute("ALTER TABLE kb_files ADD COLUMN expiry_date TEXT")
+        print("Migration: Added expiry_date column to kb_files table.")
+
     conn.commit()
     conn.close()
+
+def update_kb_file_metadata(file_id, category=None, expiry_date=None):
+    """Update user-defined metadata for a KB file."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    
+    updates = []
+    params = []
+    
+    if category is not None:
+        updates.append("category = ?")
+        params.append(category)
+        
+    if expiry_date is not None:
+        updates.append("expiry_date = ?")
+        params.append(expiry_date)
+        
+    if not updates:
+        conn.close()
+        return False
+        
+    params.append(file_id)
+    query = f"UPDATE kb_files SET {', '.join(updates)} WHERE id = ?"
+    
+    try:
+        c.execute(query, params)
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating KB file metadata: {e}")
+        return False
+    finally:
+        conn.close()
+
 
 def save_email(email_dict):
     conn = sqlite3.connect(DB_NAME, timeout=30)
