@@ -1780,6 +1780,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* KB Manager Modal */}
+      <KBManager isOpen={isKBManagerOpen} onClose={() => setIsKBManagerOpen(false)} />
     </div>
   );
 }
@@ -1864,6 +1867,3 @@ function EmailRow({ email, onClick }) {
     </div>
   );
 }
-
-{/* KB Manager Modal */ }
-<KBManager isOpen={isKBManagerOpen} onClose={() => setIsKBManagerOpen(false)} />
