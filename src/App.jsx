@@ -243,13 +243,7 @@ export default function App() {
     }
   };
 
-  const fetchTasks = async () => {
-    try {
-      const res = await fetch('http://localhost:8010/tasks');
-      const data = await res.json();
-      if (Array.isArray(data)) setTasks(data);
-    } catch (e) { console.error("Fetch tasks error", e); }
-  };
+
 
   const handleApproveDraft = async (draft) => {
     try {
