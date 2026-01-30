@@ -124,6 +124,7 @@ class TemplateSchema(BaseModel):
     content: str
     keywords: Optional[str] = ""
     attachments: Optional[List[dict]] = [] # list of {name, content}
+    isAutoEnabled: Optional[bool] = True
 
 class SettingSchema(BaseModel):
     key: str
@@ -153,13 +154,31 @@ def get_templates():
 
 @app.post("/templates")
 def save_template(template: TemplateSchema):
-    database.save_template(template.id, template.name, template.content, template.keywords or "", template.attachments)
+    database.save_template(template.id, template.name, template.content, template.keywords or "", template.attachments, template.isAutoEnabled)
     return {"status": "success"}
 
 @app.delete("/templates/{id}")
 def delete_template(id: str):
     database.delete_template(id)
     return {"status": "success"}
+
+@app.get("/templates/backup")
+def backup_templates():
+    """Download all templates as JSON backup."""
+    templates = database.get_templates()
+    return {"status": "success", "templates": templates}
+
+class RestoreTemplatesRequest(BaseModel):
+    templates: List[dict]
+
+@app.post("/templates/restore")
+def restore_templates(request: RestoreTemplatesRequest):
+    """Restore templates from backup JSON."""
+    try:
+        database.restore_templates(request.templates)
+        return {"status": "success", "message": f"Successfully restored {len(request.templates)} templates"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # --- Settings Routes ---
 @app.get("/settings")
@@ -677,10 +696,12 @@ async def analyze_email(request: ProcessingRequest):
 
     # 1. Traditional Keyword Matching
     templates = database.get_templates()
+    # Filter to only auto-enabled templates
+    auto_templates = [t for t in templates if t.get('isAutoEnabled', True)]
     matched_template = None
     email_text = f"{request.emailSubject} {request.emailBody}".lower()
     
-    for t in templates:
+    for t in auto_templates:
         keywords_str = t.get('keywords', '')
         if keywords_str:
             keywords = [k.strip().lower() for k in keywords_str.split(',') if k.strip()]

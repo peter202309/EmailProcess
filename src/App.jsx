@@ -839,6 +839,68 @@ export default function App() {
               <FolderOpen size={12} />
               知识库管理
             </button>
+            {activeTab === 'templates' && (
+              <>
+                <button
+                  onClick={async () => {
+                    try {
+                      const res = await fetch('http://localhost:8010/templates/backup');
+                      const data = await res.json();
+                      if (data.status === 'success') {
+                        const blob = new Blob([JSON.stringify(data.templates, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `templates_backup_${new Date().toISOString().split('T')[0]}.json`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        alert('✅ 模板备份已下载');
+                      }
+                    } catch (e) {
+                      alert('❌ 备份失败: ' + e.message);
+                    }
+                  }}
+                  className="ml-2 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-all flex items-center gap-1.5"
+                >
+                  <Save size={14} /> 备份
+                </button>
+                <label className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition-all flex items-center gap-1.5 cursor-pointer">
+                  <RefreshCw size={14} /> 恢复
+                  <input
+                    type="file"
+                    accept=".json"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files[0];
+                      if (!file) return;
+                      try {
+                        const text = await file.text();
+                        const templates = JSON.parse(text);
+                        if (!Array.isArray(templates)) throw new Error('Invalid backup format');
+
+                        if (!confirm(`确定要恢复 ${templates.length} 个模板吗？这将替换所有现有模板。`)) return;
+
+                        const res = await fetch('http://localhost:8010/templates/restore', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ templates })
+                        });
+                        const data = await res.json();
+                        if (data.status === 'success') {
+                          alert('✅ ' + data.message);
+                          fetchTemplates();
+                        } else {
+                          alert('❌ 恢复失败: ' + data.message);
+                        }
+                      } catch (e) {
+                        alert('❌ 恢复失败: ' + e.message);
+                      }
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </>
+            )}
           </div>
           <div className="flex gap-3">
             <button onClick={simulateNewEmail} className="px-4 py-2 border rounded-md text-sm hover:bg-gray-50 flex items-center gap-2"><RefreshCw size={14} /> 刷新</button>
@@ -1540,7 +1602,12 @@ export default function App() {
               {templates.map(t => (
                 <div key={t.id} className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm relative group hover:shadow-md transition-all">
                   <div className="flex justify-between items-center mb-4">
-                    <h3 className="font-bold text-gray-800 text-lg">{t.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-gray-800 text-lg">{t.name}</h3>
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${t.isAutoEnabled ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-gray-100 text-gray-600 border border-gray-300'}`}>
+                        {t.isAutoEnabled ? '🤖 Auto' : '✋ Manual'}
+                      </span>
+                    </div>
                     <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button onClick={() => setEditingTemplate(t)} className="p-2 hover:bg-blue-100 rounded-full text-blue-500" title="编辑名称/内容"><Edit size={16} /></button>
                       <button onClick={() => handleDeleteTemplate(t.id)} className="p-2 hover:bg-red-100 rounded-full text-red-500" title="删除"><Trash2 size={16} /></button>
@@ -1565,6 +1632,26 @@ export default function App() {
                         });
                       }}
                     />
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-100 mb-4">
+                    <div>
+                      <div className="text-xs font-bold text-blue-900">自动回复模式</div>
+                      <div className="text-[10px] text-blue-700">{t.isAutoEnabled ? '此模板参与AI自动匹配' : '此模板需手动触发'}</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const updated = templates.map(temp => temp.id === t.id ? { ...temp, isAutoEnabled: !temp.isAutoEnabled } : temp);
+                        setTemplates(updated);
+                        fetch('http://localhost:8010/templates', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ ...t, isAutoEnabled: !t.isAutoEnabled })
+                        });
+                      }}
+                      className={`w-12 h-6 rounded-full transition-colors relative ${t.isAutoEnabled ? 'bg-green-600' : 'bg-gray-300'}`}
+                    >
+                      <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${t.isAutoEnabled ? 'left-7' : 'left-1'}`} />
+                    </button>
                   </div>
                   <div className="flex flex-col gap-2">
                     <span className="text-xs font-bold text-gray-400 uppercase">关联附件:</span>

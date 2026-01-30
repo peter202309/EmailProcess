@@ -238,6 +238,9 @@ def init_db():
     if "attachments_json" not in t_cols:
         c.execute("ALTER TABLE templates ADD COLUMN attachments_json TEXT")
         print("Migration: Added attachments_json column to templates table.")
+    if "is_auto_enabled" not in t_cols:
+        c.execute("ALTER TABLE templates ADD COLUMN is_auto_enabled INTEGER DEFAULT 1")
+        print("Migration: Added is_auto_enabled column to templates table.")
 
     # Migration: Update kb_files table
     c.execute("PRAGMA table_info(kb_files)")
@@ -397,14 +400,15 @@ def get_templates():
         "name": r["name"], 
         "content": r["content"], 
         "keywords": r["keywords"] if r["keywords"] else "",
-        "attachments": json.loads(r["attachments_json"]) if r["attachments_json"] else []
+        "attachments": json.loads(r["attachments_json"]) if r["attachments_json"] else [],
+        "isAutoEnabled": bool(r["is_auto_enabled"]) if "is_auto_enabled" in r.keys() else True
     } for r in rows]
 
-def save_template(id, name, content, keywords="", attachments=[]):
+def save_template(id, name, content, keywords="", attachments=[], is_auto_enabled=True):
     conn = sqlite3.connect(DB_NAME, timeout=30)
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO templates (id, name, content, keywords, attachments_json) VALUES (?, ?, ?, ?, ?)", 
-              (id, name, content, keywords, json.dumps(attachments)))
+    c.execute("INSERT OR REPLACE INTO templates (id, name, content, keywords, attachments_json, is_auto_enabled) VALUES (?, ?, ?, ?, ?, ?)", 
+              (id, name, content, keywords, json.dumps(attachments), 1 if is_auto_enabled else 0))
     conn.commit()
     conn.close()
 
@@ -414,6 +418,38 @@ def delete_template(id):
     c.execute("DELETE FROM templates WHERE id = ?", (id,))
     conn.commit()
     conn.close()
+
+def restore_templates(templates_list):
+    """
+    Restore templates from backup. Replaces all current templates with the backup.
+    templates_list: list of dicts with keys: id, name, content, keywords, attachments, isAutoEnabled
+    """
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    c = conn.cursor()
+    try:
+        # Delete all existing templates
+        c.execute("DELETE FROM templates")
+        
+        # Insert all templates from backup
+        for t in templates_list:
+            c.execute(
+                "INSERT INTO templates (id, name, content, keywords, attachments_json, is_auto_enabled) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    t.get('id'),
+                    t.get('name'),
+                    t.get('content'),
+                    t.get('keywords', ''),
+                    json.dumps(t.get('attachments', [])),
+                    1 if t.get('isAutoEnabled', True) else 0
+                )
+            )
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
 # --- Settings ---
 def get_settings():
