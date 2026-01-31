@@ -20,6 +20,7 @@ from email.mime.base import MIMEBase
 from email import encoders
 from email.header import Header
 import base64
+import traceback
 
 from rag import RAGService
 import database
@@ -466,70 +467,130 @@ def poll_emails(fetch_mode: str = "all"):
                     else:
                         criteria = AND(date_gte=since_date)
                     
+                    print(f"[*] {user}: Searching with criteria: {criteria}")
                     msgs = mailbox.fetch(criteria, reverse=True)
-                except Exception as e_search:
-                    print(f"Standard fetch failed for {user}: {e_search}. Trying fallback...")
-                    # Fallback: Fetch limit 20, no date filter if date parsing fails
-                    if fetch_mode == "unread":
-                        criteria = AND(seen=False)
-                    else:
-                        criteria = "ALL"
-                    msgs = mailbox.fetch(criteria, limit=20, reverse=True)
-                
-                for msg in msgs:
-                    message_id = msg.headers.get('message-id', [None])[0]
-                    references = msg.headers.get('references', [None])[0]
-                    in_reply_to = msg.headers.get('in-reply-to', [None])[0]
                     
-                    thread_id = references.split()[0] if references else (in_reply_to or message_id)
-                    is_read = '\\Seen' in msg.flags
+                    # Force a peek at the first message to trigger connection/argument errors early
+                    msgs_list = []
+                    try:
+                        count = 0
+                        # Using a manual iterator to catch errors immediately
+                        for m in msgs:
+                            msgs_list.append(m)
+                            count += 1
+                            if count >= 100: break
+                    except (OSError, Exception) as e_search_exec:
+                        err_str = str(e_search_exec).lower()
+                        if "22" in err_str or "argument" in err_str:
+                            print(f"[!] {user}: Caught Errno 22 during fetch execution. Falling back...")
+                            raise e_search_exec 
+                        raise e_search_exec
 
-                    raw_body = msg.text or msg.html
-                    # If it's HTML only, clean it
-                    if not msg.text and msg.html:
-                        body_text = clean_html(msg.html)
-                    else:
-                        body_text = msg.text or ""
+                    msgs_to_process = msgs_list
 
-                    # Capture Attachments
-                    msg_attachments = []
-                    for att in msg.attachments:
-                        # Create a unique filename to avoid collisions
-                        # Format: uid_account_filename
-                        safe_acc = user.split('@')[0]
-                        unique_filename = f"{msg.uid}_{safe_acc}_{att.filename}"
-                        file_save_path = os.path.join("attachments", unique_filename)
+                except (OSError, Exception) as e_search:
+                    print(f"[!] {user}: Fetch/Search failed. Error: {e_search}")
+                    print(f"[*] {user}: Attempting fallback to ALL limit=50...")
+                    
+                    try:
+                        # Fallback to absolute simplest fetch
+                        msgs_to_process = mailbox.fetch("ALL", limit=50, reverse=True)
+                        # We must convert to list immediately to ensure it works before leaving the try
+                        msgs_to_process = [m for m in msgs_to_process]
+                    except Exception as e_final:
+                        print(f"[×] {user}: Fatal fallback error: {e_final}")
+                        errors.append(f"Fatal IMAP error for {user}: {e_final}")
+                        continue
+                
+                for msg in msgs_to_process:
+                    try:
+                        message_id = msg.headers.get('message-id', [None])[0]
+                        subject = msg.subject
                         
-                        # Save the file content
-                        with open(file_save_path, "wb") as f:
-                            f.write(att.payload)
+                        # Debug log for current message being processed
+                        print(f"[*] {user}: Processing message: {subject[:30]}... (UID: {msg.uid})")
                         
-                        msg_attachments.append({
-                            "filename": att.filename,
-                            "storedName": unique_filename,
-                            "contentType": att.content_type,
-                            "size": att.size
-                        })
+                        references = msg.headers.get('references', [None])[0]
+                        in_reply_to = msg.headers.get('in-reply-to', [None])[0]
+                        
+                        thread_id = references.split()[0] if references else (in_reply_to or message_id)
+                        is_read = '\\Seen' in msg.flags
 
-                    email_obj = {
-                        "id": str(msg.uid),
-                        "from": msg.from_,
-                        "subject": msg.subject,
-                        "body": body_text,
-                        "receivedAt": msg.date.astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-                        "status": "unread",
-                        "aiAnalysis": None,
-                        "message_id": message_id,
-                        "thread_id": thread_id,
-                        "is_read": 1 if is_read else 0,
-                        "account_owner": user,
-                        "attachments": msg_attachments
-                    }
-                    if database.save_email(email_obj):
-                        new_total += 1
+                        raw_body = msg.text or msg.html
+                        # If it's HTML only, clean it
+                        if not msg.text and msg.html:
+                            body_text = clean_html(msg.html)
+                        else:
+                            body_text = msg.text or ""
+
+                        # Capture Attachments
+                        msg_attachments = []
+                        for att in msg.attachments:
+                            # Create a unique filename to avoid collisions
+                            # Format: uid_account_filename
+                            safe_acc = user.split('@')[0]
+                            unique_filename = f"{msg.uid}_{safe_acc}_{att.filename}"
+                            file_save_path = os.path.join("attachments", unique_filename)
+                            
+                            # Save the file content
+                            with open(file_save_path, "wb") as f:
+                                f.write(att.payload)
+                            
+                            msg_attachments.append({
+                                "filename": att.filename,
+                                "storedName": unique_filename,
+                                "contentType": att.content_type,
+                                "size": att.size
+                            })
+
+                        # Safe date display for logging
+                        try:
+                            # Dual-date validation:
+                            # 1. If date header is 1900 (Outlook broken header) or < 1970 (OS limit), 
+                            #    fallback to current time for 'receivedAt' value.
+                            # 2. This ensures correct "Today/Total" statistics for new incoming emails.
+                            if msg.date.year <= 1900:
+                                import datetime
+                                now = datetime.datetime.now()
+                                print(f"[!] {user}: Detected broken Outlook date (1900). Falling back to current time: {now}")
+                                received_at_str = now.strftime("%Y-%m-%d %H:%M:%S")
+                            elif msg.date.year < 1970:
+                                print(f"[!] {user}: Detected ancient email date ({msg.date.year}). Using UTC raw string.")
+                                received_at_str = msg.date.strftime("%Y-%m-%d %H:%M:%S")
+                            else:
+                                received_at_str = msg.date.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception as e_date:
+                            print(f"[!] {user}: Date conversion error for msg {msg.uid}: {e_date}. Falling back to basic format.")
+                            try:
+                                received_at_str = f"{msg.date.year:04d}-{msg.date.month:02d}-{msg.date.day:02d} {msg.date.hour:02d}:{msg.date.minute:02d}:{msg.date.second:02d}"
+                            except:
+                                received_at_str = str(msg.date)
+
+                        email_obj = {
+                            "id": str(msg.uid),
+                            "from": msg.from_,
+                            "subject": subject,
+                            "body": body_text,
+                            "receivedAt": received_at_str,
+                            "status": "unread",
+                            "aiAnalysis": None,
+                            "message_id": message_id,
+                            "thread_id": thread_id,
+                            "is_read": 1 if is_read else 0,
+                            "account_owner": user,
+                            "attachments": msg_attachments
+                        }
+                        if database.save_email(email_obj):
+                            new_total += 1
+                    except Exception as e_msg:
+                        print(f"[×] {user}: Error processing individual message (UID: {msg.uid}): {e_msg}")
+                        traceback.print_exc()
+                        continue
+
         except Exception as e:
             err_msg = f"IMAP Error for {user}: {e}"
             print(err_msg)
+            traceback.print_exc() # Print full stack trace for deep debugging
             errors.append(err_msg)
                 
     all_emails = database.get_all_emails()

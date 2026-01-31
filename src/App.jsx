@@ -166,9 +166,17 @@ export default function App() {
     }));
   };
 
+  // Today's Date String (Local)
+  const todayStr = new Date().toLocaleDateString('en-CA'); // Gets YYYY-MM-DD format in most modern environments or similar
+
   const statPending = filteredEmails.filter(e => e.status === 'pending_review' || e.status === 'unread').length;
   const statProcessed = filteredEmails.filter(e => e.status === 'processed').length;
   const statTotal = filteredEmails.length;
+
+  // Today specific stats
+  const statTotalToday = filteredEmails.filter(e => e.receivedAt?.startsWith(todayStr)).length;
+  const statPendingToday = filteredEmails.filter(e => (e.status === 'pending_review' || e.status === 'unread') && e.receivedAt?.startsWith(todayStr)).length;
+  const statProcessedToday = filteredEmails.filter(e => e.status === 'processed' && e.receivedAt?.startsWith(todayStr)).length;
 
   const fetchEmails = async () => {
     setIsLoadingEmails(true);
@@ -911,9 +919,9 @@ export default function App() {
         <main className="flex-1 overflow-auto p-6">
           {(activeTab === 'dashboard' || activeTab === 'review') && (
             <div className="grid grid-cols-3 gap-6 mb-6">
-              <StatCard title="今日邮件总量" value={statTotal} icon={<Mail className="text-blue-500" />} bg="bg-blue-50" />
-              <StatCard title="待人工审核" value={statPending} icon={<AlertTriangle className="text-orange-500" />} bg="bg-orange-50" urgent={statPending > 0} />
-              <StatCard title="已处理" value={statProcessed} icon={<CheckCircle className="text-green-500" />} bg="bg-green-50" />
+              <StatCard title="邮件总量 (今日/总数)" value={`${statTotalToday} / ${statTotal}`} icon={<Mail className="text-blue-500" />} bg="bg-blue-50" />
+              <StatCard title="待审核 (今日/总数)" value={`${statPendingToday} / ${statPending}`} icon={<AlertTriangle className="text-orange-500" />} bg="bg-orange-50" urgent={statPending > 0} />
+              <StatCard title="已处理 (今日/总数)" value={`${statProcessedToday} / ${statProcessed}`} icon={<CheckCircle className="text-green-500" />} bg="bg-green-50" />
             </div>
           )}
 

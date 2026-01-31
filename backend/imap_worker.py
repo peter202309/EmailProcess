@@ -41,17 +41,16 @@ def listen_to_account(user, password):
                     if responses:
                         print(f"[!] {user}: New activity detected!")
                         # Trigger poll-emails on the main backend
-                        try:
                             # Use unread mode to be efficient
-                            res = requests.post(f"{BACKEND_URL}/poll-emails?fetch_mode=unread")
+                            # Changed to GET to match backend definition
+                            res = requests.get(f"{BACKEND_URL}/poll-emails?fetch_mode=unread")
                             if res.status_code == 200:
                                 data = res.json()
                                 print(f"[√] {user}: Poll triggered. New emails: {data.get('new_emails_count', 0)}")
                                 
-                                # If there are new emails, and auto-process is needed, we could trigger it here
-                                # But currently process-emails is a frontend-driven action.
-                                # To make it truly automatic, we should add an auto-process endpoint.
+                                # If there are new emails, trigger auto-process
                                 if data.get('new_emails_count', 0) > 0:
+                                    print(f"[*] {user}: Triggering auto-processing for new emails...")
                                     requests.post(f"{BACKEND_URL}/auto-trigger-processing")
                             else:
                                 print(f"[×] {user}: Poll failed with status {res.status_code}")
